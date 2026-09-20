@@ -2,7 +2,7 @@
 
 An independent supplement to [How to Scale Your Model](https://jax-ml.github.io/scaling-book/)
 (Austin et al., Google DeepMind, 2025), covering the frontier open-weight models of 2025 and 2026
-and the hardware they actually run on. Not written or reviewed by the book's authors.
+and the hardware they actually run on. The derivations lead with the GPUs those models were trained and served on (H800, H100/H200, GB200 NVL72) and keep TPUs as the comparison. Not written or reviewed by the book's authors.
 
 Live site: https://aghyad-deeb.github.io/scaling-book-2026/
 

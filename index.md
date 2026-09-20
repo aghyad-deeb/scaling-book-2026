@@ -111,7 +111,7 @@ With one exception (the H800 spec sheet in Question 7), nothing below is a mista
 
 * **Section 5's** constants 2,550 and 850 are TPU v5p numbers. On TPU7x they are 12,800 and 4,270, and every parallelism threshold in that section tightens by 5x. [Section 12's](https://jax-ml.github.io/scaling-book/gpus) 2,200 and 2,475 are H100 numbers; on HGX B200 nodes the cross-node one is 5,625, and on a GB200 NVL72 rack, where the whole rack shares one gather, 694. See the table above and [Section 13](moe).
 
-* **Section 12** gives the H800's NVLink as 300GB/s. NVIDIA's partners list 400GB/s bidirectional, 200GB/s each way in the book's convention, and DeepSeek measures about 160GB/s in practice against 50GB/s of InfiniBand. [Section 13](moe) uses 200 and 160.
+* **Section 12** gives the H800's NVLink as 300GB/s and DeepSeek-V3's batch as 4M tokens. DeepSeek's own hardware paper says the H800's NVLink was cut from 900 to 400GB/s bidirectional, 200GB/s each way in the book's convention, and DeepSeek measures about 160GB/s in practice against 50GB/s of InfiniBand; the V3 batch was 15,360 sequences of 4,096 tokens, 62.9M in all, or 30,700 per GPU. [Section 13](moe) uses 200 and 160.
 
 * **Section 7** treats attention as always bandwidth-bound during generation. That's true for grouped-query attention (intensity equal to the group size, about 8). Absorbed multi-head latent attention with 128 heads and an fp8 cache has an intensity of 480 and is compute-bound at long context on every current GPU and TPU; with a bf16 cache, or with the 64 heads of Kimi K2 and GLM-5, it sits 14 to 22% below the roofline of the H800, the Blackwell parts and TPU7x, and above the H200's. [Section 14](attention).
 

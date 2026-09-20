@@ -202,7 +202,7 @@ Nearly every DeepSeek, GLM, Qwen, Nemotron and MiniMax flagship since 2025 train
 | SGLang, V3 on H200, 2 requests per GPU | 3 / 4 | 2.18 / 2.44 | +60% throughput |
 | SGLang, V3, 128 requests per GPU | 1 | | +14% |
 | GLM-5 vs DeepSeek-V3.2, 4 steps | 4 | 2.76 vs 2.55 | |
-| GLM-5.3, EAGLE-style draft from the MTP head | 6 (5 steps) | 3.5 | 252 to 920 tok/s per H200 |
+| GLM-5.3, EAGLE-style draft from the MTP head | 6 (5 steps) | 3.5 (simulated in the published run) | 3.7ms per token at batch 1, 14.2ms at batch 16, on 8 H200s |
 | DeepSeek-V4-Flash with DSpark (5 parallel draft positions) | 5 | | +60 to 85% per-user speed over depth-1 MTP (Pro: +57 to 78%) |
 
 The pattern is familiar from [Section 7](https://jax-ml.github.io/scaling-book/inference): speculation buys the most when the batch is small and the step is bandwidth-bound (+60% at two requests per GPU), and least when the batch is large and the MoE FLOPs are already busy (+14% at 128). The place it matters most in 2026 is one we have not discussed yet: RL rollouts, where a few very long sequences finish last and everyone waits. GLM-5's report says MTP "provides disproportionately large benefits on the long tail" there.
