@@ -62,24 +62,24 @@ The reference model in the book is LLaMA 3-70B: 70B dense parameters, 8 KV heads
 
 The book's rooflines need four numbers per accelerator: FLOPs/s, HBM bandwidth, scale-up network bandwidth (NVLink or ICI) and scale-out network bandwidth (InfiniBand or DCN). Here they are for what the 2026 models run on, GPUs first since that is where nearly all of them were trained and are served, with the operational intensities that appear in every derivation: $C / W_\text{hbm}$ (the decode critical batch) and $\alpha = C / W_\text{net}$ over the scale-up network (per GPU, or per ICI axis). FLOPs are dense, no structured sparsity, in bf16 unless the column says otherwise. All bandwidths are one-way, as in the book; NVIDIA's NVLink figures are bidirectional and have been halved.<d-footnote>Sources: Google Cloud TPU documentation for v5p, v6e and TPU7x; NVIDIA product pages for H100/H200, HGX B200, GB200 NVL72, GB300 NVL72 and Vera Rubin NVL72 (which quote sparse figures by default; we halve them); AMD product pages for MI355X and MI455X. TPU ICI figures follow the original book's tables (9e10 bytes/s one-way per link, which is Google's 200 GB/s bidirectional per axis rounded down). GB200 per-GPU figures are the rack totals divided by 72. Rubin is "in full production" per NVIDIA's August 2026 earnings but not broadly available; its product page and its launch blog disagree on NVLink 6 (3.0 versus 3.6 TB/s) and HBM4 bandwidth (19.2 versus 22 TB/s); we use the product page. AMD's MI455X page and its Helios page disagree on HBM bandwidth (23.3 versus 19.6 TB/s). AMD's MI355X page gives 153 GB/s per Infinity Fabric link without stating a direction; we assume bidirectional, as AMD states for the MI455X, and halve the seven-link total. GB300 and Rubin HBM use the per-GPU specification (288 GB) rather than the rounded rack total. Where a vendor page labels a figure dense, as Rubin's product page does for its training columns, we use it as given. TPU 8t and 8i were announced in April 2026 with FP4 figures only (12.6 and 10.1 PFLOPs, 216 and 288 GB, 6.5 and 8.6 TB/s, twice TPU7x's ICI); Google has not published their bf16 or fp8 rates, so they are omitted.</d-footnote>
 
-| Accelerator | bf16 PFLOPs/s | fp8 | fp4 | HBM | HBM TB/s | Scale-up egress | Domain | Scale-out egress | $C/W_\text{hbm}$ | $\alpha = C/W_\text{net}$ |
+| Accelerator | bf16 PFLOPs/s | fp8 | fp4 | HBM | HBM TB/s | Scale-up GB/s | Domain | Scale-out GB/s per GPU | $C/W_\text{hbm}$ | $\alpha = C/W_\text{net}$ |
 | :--- | ------------: | --: | --: | --: | -------: | :-------------- | -----: | :--------------- | ---------------: | ---------------: |
-| H800 SXM (2023; DeepSeek, Kimi) | 0.99 | 1.98 | | 80 GB | 3.35 | 200 GB/s (160 measured) | 8 | 50 GB/s per GPU | 296 | 4,950 |
-| H100 (2022) | 0.99 | 1.98 | | 80 GB | 3.35 | 450 GB/s | 8 | 50 GB/s per GPU | 296 | 2,200 |
-| H200 (2024) | 0.99 | 1.98 | | 141 GB | 4.8 | 450 GB/s | 8 | 50 GB/s per GPU | 206 | 2,200 |
-| B200, HGX (2025) | 2.25 | 4.5 | 9 | 180 GB | 8 | 900 GB/s | 8 | 50 GB/s per GPU | 281 | 2,500 |
-| GB200 NVL72, per GPU (2025; Nemotron 3) | 2.5 | 5 | 10 | 186 GB | 8 | 900 GB/s | 72 | 50 GB/s per GPU, 3.6 TB/s per rack | 312 | 2,800 |
-| GB300 NVL72, per GPU (2026) | 2.5 | 5 | 15 | 288 GB | 8 | 900 GB/s | 72 | 100 GB/s per GPU, 7.2 TB/s per rack | 312 | 2,800 |
-| Vera Rubin NVL72, per GPU (2026, in production) | 4 | 17.5 | 35 | 288 GB | 19.2 | 1,500 GB/s | 72 | 200 GB/s per GPU | 208 | 2,700 |
-| AMD MI355X (2025) | 2.5 | 5 | 10.1 | 288 GB | 8 | about 535 GB/s | 8 | 50 GB/s per GPU | 312 | 4,700 |
-| AMD MI455X, Helios (2026) | 5 | 20.1 | 40.3 | 432 GB | 19.6 to 23.3 | 1,800 GB/s | 72 | 100 GB/s per GPU | 230 | 2,800 |
-| TPU7x, Ironwood (2025) | 2.3 | 4.6 | | 192 GB | 7.4 | 6 x 90 GB/s | 9,216 | 12.5 GB/s per chip | 311 | 12,800 per axis |
-| TPU v6e (2024; Gemma 4) | 0.92 | 1.84 (int8) | | 32 GB | 1.6 | 4 x 90 GB/s | 256 | 12.5 GB/s per chip | 575 | 5,110 per axis |
-| TPU v5p (2023) | 0.46 | 0.92 (int8) | | 96 GB | 2.8 | 6 x 90 GB/s | 8,960 | 6.25 GB/s per chip | 164 | 2,550 per axis |
+| H800 (2023) | 0.99 | 1.98 | | 80 GB | 3.35 | 200 (160 measured) | 8 | 50 | 296 | 4,950 |
+| H100 (2022) | 0.99 | 1.98 | | 80 GB | 3.35 | 450 | 8 | 50 | 296 | 2,200 |
+| H200 (2024) | 0.99 | 1.98 | | 141 GB | 4.8 | 450 | 8 | 50 | 206 | 2,200 |
+| B200, HGX (2025) | 2.25 | 4.5 | 9 | 180 GB | 8 | 900 | 8 | 50 | 281 | 2,500 |
+| GB200 NVL72, per GPU (2025) | 2.5 | 5 | 10 | 186 GB | 8 | 900 | 72 | 50 (3,600 per rack) | 312 | 2,800 |
+| GB300 NVL72, per GPU (2026) | 2.5 | 5 | 15 | 288 GB | 8 | 900 | 72 | 100 (7,200 per rack) | 312 | 2,800 |
+| Vera Rubin NVL72, per GPU (2026) | 4 | 17.5 | 35 | 288 GB | 19.2 | 1,500 | 72 | 200 | 208 | 2,700 |
+| AMD MI355X (2025) | 2.5 | 5 | 10.1 | 288 GB | 8 | about 535 | 8 | 50 | 312 | 4,700 |
+| AMD MI455X, Helios (2026) | 5 | 20.1 | 40.3 | 432 GB | 19.6 to 23.3 | 1,800 | 72 | 100 | 230 | 2,800 |
+| TPU7x, Ironwood (2025) | 2.3 | 4.6 | | 192 GB | 7.4 | 6 x 90 | 9,216 | 12.5 | 311 | 12,800 per axis |
+| TPU v6e (2024) | 0.92 | 1.84 (int8) | | 32 GB | 1.6 | 4 x 90 | 256 | 12.5 | 575 | 5,110 per axis |
+| TPU v5p (2023) | 0.46 | 0.92 (int8) | | 96 GB | 2.8 | 6 x 90 | 8,960 | 6.25 | 164 | 2,550 per axis |
 
 {% include figure.liquid path="assets/img/chip-intensity.svg" class="img-fluid" caption="<b>Figure:</b> the HBM arithmetic intensity $C / W_\text{hbm}$ of each chip at each precision it supports. In bf16 the number has sat between 160 and 320 for four generations, so the book's decode rules of thumb still hold; in fp8 and fp4 the same chips are two to six times more compute-heavy, and every batch-size threshold moves with them." %}
 
-Domain is the number of accelerators in one scale-up fabric, an NVLink domain or an ICI pod; scale-out egress is what one GPU (or one rack, or one TPU host's share) can push into the InfiniBand or data-center network. A few things jump out of the last three columns.
+Domain is the number of accelerators in one scale-up fabric, an NVLink domain or an ICI pod; scale-out is what one GPU (or one TPU chip's share of its host NIC) can push into the InfiniBand or data-center network, one way, with the rack total where a whole rack shares one fabric. The H800 is the GPU DeepSeek-V3 and Kimi K2 trained on, the GB200 is Nemotron 3's, and v6e is Gemma 4's. A few things jump out of the last three columns.
 
 **The HBM intensity barely moved.** From v5p to TPU7x, from H100 to Rubin, the bf16 number stays between 160 and 320 (TPU v6e, with only 32GB of HBM, is the exception at 575). Chips got faster and their memory got faster in step, so [Section 7](https://jax-ml.github.io/scaling-book/inference)'s "batch 240 to be compute-bound" rule still holds in bf16. It doesn't hold once the matmuls run in fp8 or fp4, where the same chip's intensity doubles and quadruples: 1,875 for fp4 on GB300.
 

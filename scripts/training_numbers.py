@@ -119,7 +119,8 @@ print("=" * 90)
 print(f"  SGLang GB200: 13,386 out tok/s/GPU (fp8 attn + nvfp4 MoE, 2k in) vs DeepSeek H800 production {tps_gpu:.0f} -> {13386 / tps_gpu:.1f}x per GPU")
 print(f"  SGLang 96xH100 (EP72 decode): 22.3k/node = {22.3e3 / 8:.0f} tok/s/GPU; InferenceX GB200 at 125 tok/s/user: 4,130 tok/s/GPU vs B200 8-GPU node 941")
 rep = 11.4e9 + 58 * 3 * 7168 * 2048 + 1.2e9 + 1.85e9
-print(f"  weights per GPU on NVL72 with EP64: experts {656e9 / 64 / GB:.1f} GB fp8 or {656e9 * 0.5 / 64 / GB:.1f} GB fp4, plus replicated {rep / GB:.0f} GB fp8 -> {(656e9 / 64 + rep) / GB:.0f} / {(656e9 * 0.5 / 64 + rep) / GB:.0f} GB; AllToAll 15.1 MB at 726 GB/s = {15.1e6 / 726e9 * 1e6:.0f} us/layer -> {15.1e6 / 726e9 * 58 * 1e3:.1f} ms/step")
+print(f"  weights per GPU on NVL72 with EP64: experts {656e9 / 64 / GB:.1f} GB fp8 or {656e9 * 0.5 / 64 / GB:.1f} GB fp4, plus replicated {rep / GB:.0f} GB fp8 -> {(656e9 / 64 + rep) / GB:.0f} / {(656e9 * 0.5 / 64 + rep) / GB:.0f} GB")
+print(f"  NVL72 AllToAll for the 15.1 MB/layer: at ~700 GB/s (80% of NVLink) {15.1e6 / 700e9 * 1e6:.0f} us/layer; TRT-LLM measured EP64 at 64-128 tok/GPU: dispatch 28.8-41.6 us + combine 37.7-44.5 us = {28.8 + 37.7:.0f}-{41.6 + 44.5:.0f} us/layer -> {(28.8 + 37.7) * 58 / 1e3:.1f}-{(41.6 + 44.5) * 58 / 1e3:.1f} ms/step (vs 22 ms over IB)")
 
 print()
 print("=" * 90)
