@@ -123,9 +123,21 @@ print(f"  weights per GPU on NVL72 with EP64: experts {656e9 / 64 / GB:.1f} GB f
 
 print()
 print("=" * 90)
-print("Section 16: pretraining DeepSeek-V4-Pro-class model on a TPU7x pod")
+print("Section 16: pretraining a DeepSeek-V4-Pro-class model on 128 GB200 NVL72 racks (9,216 GPUs)")
 print("=" * 90)
 F = 6 * 49e9 * 33e12
+C_GB200_FP8, W_NVL, W_RACK = 5e15, 9e11, 72 * 5e10
+for mfu in (0.3, 0.4, 0.5):
+    print(f"  {F:.2g} FLOPs on 9216 x 5e15 fp8 at {mfu:.0%} MFU: {F / (9216 * C_GB200_FP8 * mfu) / 86400:.1f} days; on 2048 GB200: {F / (2048 * C_GB200_FP8 * mfu) / 86400:.0f} days")
+print(f"  same run on 2048 H800 at DeepSeek-V3's 17%: {F / (2048 * 1.98e15 * 0.17) / 86400:.0f} days")
+print(f"  batch 94.4M / 9216 = {94.4e6 / 9216:,.0f} tokens/GPU; alpha_fp8 NVLink = {C_GB200_FP8 / W_NVL:,.0f}; C/W_rack = {C_GB200_FP8 / W_RACK:,.0f} tokens/GPU (bf16 gathers), {C_GB200_FP8 / W_RACK / 2:,.0f} (fp8 gathers)")
+print(f"  pure FSDP across racks: (E/k) x C/W_rack = {(384 / 6) * C_GB200_FP8 / W_RACK:,.0f} tokens/GPU; EP64 in-rack + FSDP: {(384 / (6 * 64)) * C_GB200_FP8 / W_RACK:,.0f} / {(384 / (6 * 64)) * C_GB200_FP8 / W_RACK / 2:,.0f}")
+print(f"  in-rack AllToAll (fp8 matmuls, fp8 dispatch, bf16 combine) needs F > alpha_fp8/2 = {C_GB200_FP8 / W_NVL / 2:,.0f}; V4-Pro F = 3072 -> {3072 / (C_GB200_FP8 / W_NVL / 2):.2f}x; DeepSeek's C/W <= 2F = {2 * 3072:,} vs {C_GB200_FP8 / W_NVL:,.0f}")
+print(f"  activations at 4 checkpoints/layer: {10200 * 61 * 7168 * 2 * 4 / 1e9:.0f} GB/GPU on 9216; {46000 * 61 * 7168 * 2 * 4 / 1e9:.0f} GB/GPU on 2048")
+print()
+print("=" * 90)
+print("Section 16: the same run on a TPU7x pod")
+print("=" * 90)
 for mfu in (0.3, 0.4, 0.5):
     print(f"  {F:.2g} FLOPs on 9216 x 4.61e15 fp8 at {mfu:.0%} MFU: {F / (9216 * 4.61e15 * mfu) / 86400:.1f} days; bf16 peak: {F / (9216 * 2.3e15 * mfu) / 86400:.1f} days")
 print(f"  batch 94.4M tokens / 9216 chips = {94.4e6 / 9216:,.0f} tokens/chip; FSDP needs (E/(kZ)) x alpha/3: Z=64, fp8 FLOPs -> {(384 / 6) / 64 * 25600 / 3:,.0f} (bf16 gather) / {(384 / 6) / 64 * 12800 / 3:,.0f} (fp8 gather)")

@@ -30,7 +30,7 @@ toc:
   - name: "Why Attention Is Back on the Critical Path"
   - name: "A Menu of Attention Mechanisms"
   - name: "Multi-Head Latent Attention"
-  - subsections:
+    subsections:
     - name: "Parameters and cache size"
     - name: "The absorption trick changes the roofline"
   - name: "Sliding Windows and Local-Global Interleaving"
@@ -129,7 +129,7 @@ $$2 \cdot N \cdot (d_c + d_R) + 2 \cdot N \cdot d_c = 2 \cdot 128 \cdot (576 + 5
 
 and reads $576$ bytes (fp8). That's an arithmetic intensity of **484 FLOPs/byte with an fp8 cache, or 242 with bf16**. Compare GQA: LLaMA 3-70B does $2 \cdot 64 \cdot 128 \cdot 2 = 32{,}768$ FLOPs per context token and reads $2 \cdot 8 \cdot 128 = 2048$ bytes, an intensity of 16 (int8) or 8 (bf16), which is just the group size $G = N/K$, as Question 4 of [Section 4](https://jax-ml.github.io/scaling-book/transformers) told us.
 
-Recall the chip intensities from [Section 2](https://jax-ml.github.io/scaling-book/tpus) and [Section 12](https://jax-ml.github.io/scaling-book/gpus), and the hardware table in the [2026 outline](..): 240 for TPU v5e, 164 for v5p, 311 for TPU7x, 296 for H100, 281 for B200 (bf16 FLOPs over HBM bandwidth). GQA attention at intensity 8 is hopelessly memory-bound on all of them, which is why [Section 7](https://jax-ml.github.io/scaling-book/inference) could treat attention as always bandwidth-bound and move on. MLA attention at 484 FLOPs/byte with an fp8 cache is above the roofline on every chip listed; with a bf16 cache (242) it's above v5e and v5p but 14 to 22% below B200, H100 and TPU7x. **With MLA and an fp8 cache, decode attention is compute-bound at long context.** One assumption is buried in that 484: it pairs an fp8 cache with bf16 score and value matmuls, which is what DeepSeek's V3 write-up describes (fp8 storage, bf16 attention core). If the matmuls ran in fp8 too, the chip intensities would double (562 for B200, 591 for H100, 622 for TPU7x) and 484 would be memory-bound on all three. The rest of this section assumes bf16 matmuls on an fp8 cache. DeepSeek-V3 does 8.5x the attention FLOPs of LLaMA 3-70B per context token and reads 3.6x fewer bytes, and the trade is worth it because bytes were the binding constraint.
+Recall the accelerator intensities from [Section 12](https://jax-ml.github.io/scaling-book/gpus), [Section 2](https://jax-ml.github.io/scaling-book/tpus) and the hardware table in the [2026 outline](..) (bf16 FLOPs over HBM bandwidth): 296 for an H800 or H100, 206 for an H200, 281 for a B200, 312 for a GB200, and 311 for TPU7x, 240 for v5e, 164 for v5p. GQA attention at intensity 8 is hopelessly memory-bound on all of them, which is why [Section 7](https://jax-ml.github.io/scaling-book/inference) could treat attention as always bandwidth-bound and move on. MLA attention at 484 FLOPs/byte with an fp8 cache is above the roofline on every one of them; with a bf16 cache (242) it's above the H200 and the two older TPUs but 14 to 22% below the H800, B200, GB200 and TPU7x. **With MLA and an fp8 cache, decode attention is compute-bound at long context.** One assumption is buried in that 484: it pairs an fp8 cache with bf16 score and value matmuls, which is what DeepSeek's V3 write-up describes (fp8 storage, bf16 attention core). If the matmuls ran in fp8 too, the intensities would double (591 for H800/H100, 412 for H200, 562 for B200, 625 for GB200, 622 for TPU7x) and 484 would be memory-bound everywhere except on the H200, whose big HBM and unchanged compute make it the GPU that vLLM and SGLang publish most of their MLA numbers on. The rest of this section assumes bf16 matmuls on an fp8 cache. DeepSeek-V3 does 8.5x the attention FLOPs of LLaMA 3-70B per context token and reads 3.6x fewer bytes, and the trade is worth it because bytes were the binding constraint.
 
 This has a practical consequence you can see in DeepSeek's serving layout ([Section 16](../applied-frontier)): attention is run *data-parallel* across all 144 decode GPUs, each GPU handling the attention for its own sequences, rather than tensor-parallel across heads. Tensor parallelism over heads would require every shard to read the full shared latent for every sequence (it isn't sharded by head), so per GPU it does the same FLOPs as data parallelism but $Y$ times the bytes: it divides the arithmetic intensity by $Y$ and pushes attention back toward memory-bound. Data parallelism keeps each sequence's latent on one GPU, so the intensity stays at 484 and the attention FLOPs available grow with the number of GPUs.
 
@@ -137,7 +137,7 @@ It also means the head count is now a hardware knob. The intensity of absorbed M
 
 Let's put numbers on it. For DeepSeek-V3 at 128k context, one decoded token's attention costs `61 * 278528 * 131072 = 2.2e12` FLOPs and reads `61 * 131072 * 576 = 4.6GB`. At batch 64 on a B200 that's `64 * 2.2e12 / 2.25e15 = 63ms` of FLOPs against `64 * 4.6e9 / 8e12 = 37ms` of bytes. That's 63ms per step for attention alone, before we do any MoE work at all, which is what DeepSeek Sparse Attention was built to fix.
 
-<p markdown=1 class="takeaway">**Takeaway:** MLA caches a shared 576-element latent per token per layer instead of $2KH$ keys and values, cutting DeepSeek-V3's cache to 35kB per token. With the absorption trick the decode kernel behaves like MQA with a 576-wide head shared by all 128 query heads, giving an arithmetic intensity of 240 to 480 FLOPs/byte. With an fp8 cache, attention is no longer memory-bound at long context; it's compute-bound on every current chip, and scales by adding chips in data parallel.</p>
+<p markdown=1 class="takeaway">**Takeaway:** MLA caches a shared 576-element latent per token per layer instead of $2KH$ keys and values, cutting DeepSeek-V3's cache to 35kB per token. With the absorption trick the decode kernel behaves like MQA with a 576-wide head shared by all 128 query heads, giving an arithmetic intensity of 240 to 480 FLOPs/byte. With an fp8 cache, attention is no longer memory-bound at long context; it's compute-bound on every current GPU, and scales by adding GPUs in data parallel.</p>
 
 ## Sliding Windows and Local-Global Interleaving
 
@@ -240,21 +240,21 @@ V4.1-Flash goes further in two ways. It shares the compressed KV entries and ind
 
 [Section 7](https://jax-ml.github.io/scaling-book/inference)'s step-time formula needs one amendment. With MLA-class attention the FLOPs term of attention is no longer negligible, so
 
-$$T_\text{step} \geq \max\left( \frac{B \cdot \text{bytes read}(S) + \text{weight bytes per chip}}{W_\text{hbm}}, \; \frac{B \cdot \text{attention FLOPs}(S) + 2 B \cdot \text{active params}}{C} \right)$$
+$$T_\text{step} \geq \max\left( \frac{B \cdot \text{bytes read}(S) + \text{weight bytes per GPU}}{W_\text{hbm}}, \; \frac{B \cdot \text{attention FLOPs}(S) + 2 B \cdot \text{active params}}{C} \right)$$
 
-where $B$ is the per-chip batch in sequences, $\text{bytes read}(S)$ comes from the table above, and the weight bytes per chip are the model's weights divided by however many chips they are spread over (the MoE FLOPs term uses all the active parameters because every one of the chip's own tokens visits $k$ experts somewhere). Let's see what this does for a few models on a 192GB chip (TPU7x, or a GB200 at 186GB) with weights spread over a 64-chip group, at 128k context:
+where $B$ is the per-GPU batch in sequences, $\text{bytes read}(S)$ comes from the table above, and the weight bytes per GPU are the model's weights divided by however many GPUs they are spread over (the MoE FLOPs term uses all the active parameters because every one of the GPU's own tokens visits $k$ experts somewhere). Let's see what this does for a few models on a GB200 NVL72 (186GB per GPU) with weights spread over 64 GPUs of the rack, at 128k context:
 
-| Model | Weights per chip | Cache per sequence (stored) | Sequences per chip |
-| :---- | ---------------: | --------------------------: | -----------------: |
+| Model | Weights per GPU | Cache per sequence (stored) | Sequences per GPU |
+| :---- | --------------: | --------------------------: | ----------------: |
 | LLaMA 3 405B, int8 | 6.3GB | 33.8GB | 5 |
-| DeepSeek-V3, fp8 | 10.5GB | 4.6GB | 39 |
-| DeepSeek-V3.2, fp8 | 10.7GB | 5.6 GB (incl. indexer keys) | 32 |
-| Qwen3.8-2.4T, fp8 | 37.5GB | 6.8GB | 23 |
-| Kimi K3, fp4 experts | 22.2GB | 2.0GB | 84 |
+| DeepSeek-V3, fp8 | 10.5GB | 4.6GB | 38 |
+| DeepSeek-V3.2, fp8 | 10.7GB | 5.6 GB (incl. indexer keys) | 31 |
+| Qwen3.8-2.4T, fp8 | 37.5GB | 6.8GB | 21 |
+| Kimi K3, fp4 experts | 22.2GB | 2.0GB | 81 |
 
-Five 128k-token sequences per chip for a dense GQA model of 2024; 39 for an MLA model; 84 for a hybrid. That's the memory side. Now the time side, for DeepSeek-V3 versus V3.2 at batch 32 per chip on a B200 (8e12 bytes/s, 2.25e15 FLOPs/s):
+Five 128k-token sequences per GPU for a dense GQA model of 2024; 38 for an MLA model; 81 for a hybrid. The same arithmetic on the hardware DeepSeek actually serves on is tighter: under its 144-way EP each H800 holds 22GB of weights ([Section 16](../applied-frontier)) and has about 58GB free, which is `58 / 4.6 = 12` full-length sequences at 128k, or 25 on an H200. A 2026 rack is the same as a 2023 node with a TPU7x-class TPU per chip, which is exactly what the GB200 is. (A 64-chip TPU7x cube at 192GB per chip lands within one sequence of every GB200 row.) That's the memory side. Now the time side, for DeepSeek-V3 versus V3.2 at batch 32 per GPU on a B200 (8e12 bytes/s, 2.25e15 FLOPs/s):
 
-| | bytes per step | FLOPs per step | $T_\text{step}$ | tokens/s per chip |
+| | bytes per step | FLOPs per step | $T_\text{step}$ | tokens/s per GPU |
 | :-- | -------------: | -------------: | --------------: | ----------------: |
 | V3 (full MLA) | 32 x 4.6 + 10.5 = 158GB | 32 x 2.2e12 (attn) + 32 x 7.4e10 (MoE) = 7.3e13 | max(20ms, **32ms**) | 1,000 |
 | V3.2 (DSA) | 32 x 1.1 + 10.7 = 46GB | 32 x 1.7e11 + 32 x 7.4e10 = 7.8e12 | max(**5.8ms**, 3.5ms) | 5,500 |
@@ -263,7 +263,7 @@ Full MLA is *compute*-bound on attention at this context, which no model in [Sec
 
 The same table tells you what the KV term did to the disaggregation argument. In [Section 7](https://jax-ml.github.io/scaling-book/inference) we moved the KV cache from prefill to decode servers over the network and called the cost "typically acceptable". A 128k-token DeepSeek-V3 cache is 4.6GB; at 50GB/s per GPU that is 92ms, a few decode steps. A LLaMA 3-405B cache at the same length is 34GB, 0.7 seconds. Small caches are what make disaggregated serving of long contexts work at all.
 
-<p markdown=1 class="takeaway">**Takeaway:** Add an attention-FLOPs term to the [Section 7](https://jax-ml.github.io/scaling-book/inference) decode roofline. For MLA models at long context it is the binding term; sparse attention removes it. Cache size sets sequences per chip (5 for LLaMA 3-405B, 39 for DeepSeek-V3, 84 for Kimi K3 at 128k on a 192GB chip) and, through the KV transfer, whether prefill-decode disaggregation is even feasible at long context.</p>
+<p markdown=1 class="takeaway">**Takeaway:** Add an attention-FLOPs term to the [Section 7](https://jax-ml.github.io/scaling-book/inference) decode roofline. For MLA models at long context it is the binding term; sparse attention removes it. Cache size sets sequences per GPU (5 for LLaMA 3-405B, 38 for DeepSeek-V3, 81 for Kimi K3 at 128k on a GB200; 12 for DeepSeek-V3 on the H800s it's served on) and, through the KV transfer, whether prefill-decode disaggregation is even feasible at long context.</p>
 
 ## Rooflines: Attention FLOPs at Long Context
 
@@ -284,7 +284,7 @@ $$S^* = \frac{6 (k + E_s) D F}{N (d_{qk} + d_v)} \cdot \frac{L}{L_\text{full}}$$
 
 This is the FLOPs-side reason the 2026 architectures look the way they do. Going from dense LLaMA 3 to a fine-grained MoE with 128 heads pulled the crossover in from 86k to 19k tokens: with a sparse MLP, attention is the expensive part of a 32k-token training sequence. Halving the heads (Kimi K2) buys 2x. Making three quarters of the layers linear (Qwen3.8, Kimi K3) buys 4x on top, and sliding windows in five layers of six (Gemma) buy 6x. Sparse attention changes the functional form: with DSA the quadratic term is the indexer at $H_I d_I S = 8192 S$ per token per layer, giving $S^* \approx 97\text{k}$ for V3.2, and the main attention becomes a constant.
 
-Context parallelism ([Section 5](https://jax-ml.github.io/scaling-book/training)'s note) is what you reach for when even that is not enough, or when a single sequence's activations do not fit. For attention layers it is cheap: ring attention<d-cite key="ringattention"></d-cite> passes each chip's KV shard around the ring, `S * 576` bytes per layer for MLA, a rounding error next to the $S^2$ FLOPs it enables. For linear layers it is a sequential hand-off of the state between chunks. Most 2026 reports mention some form of it; Kimi K3 trained at 64k tokens and extended to 1M in its cooldown phase (the low-learning-rate tail of pretraining), DeepSeek-V4 trained at 64k and used YaRN to reach 1M.
+Context parallelism ([Section 5](https://jax-ml.github.io/scaling-book/training)'s note) is what you reach for when even that is not enough, or when a single sequence's activations do not fit. For attention layers it is cheap: ring attention<d-cite key="ringattention"></d-cite> passes each GPU's KV shard around the ring, `S * 576` bytes per layer for MLA, a rounding error next to the $S^2$ FLOPs it enables. For linear layers it is a sequential hand-off of the state between chunks. Most 2026 reports mention some form of it; Kimi K3 trained at 64k tokens and extended to 1M in its cooldown phase (the low-learning-rate tail of pretraining), DeepSeek-V4 trained at 64k and used YaRN to reach 1M.
 
 <p markdown=1 class="takeaway">**Takeaway:** The attention-versus-MLP crossover is $S^* = 6(k + E_s) D F L / (N (d_{qk} + d_v) L_\text{full})$. Fine-grained MoE with many heads pulled it down to 19k tokens (DeepSeek-V3); hybrids, windows and sparsity pushed it back past 100k. That, as much as the cache, is why long-context training of 2026 models is affordable.</p>
 
@@ -345,11 +345,11 @@ The long-context ratio is 7.6x. Per global layer, Gemma 4 stores 1024 bytes per 
 
 {% enddetails %}
 
-**Question 3 [MLA intensity]:** Kimi K2 and GLM-5 use MLA with 64 query heads rather than DeepSeek-V3's 128. What is the arithmetic intensity of their absorbed decode attention with an fp8 cache and with a bf16 cache? On which of TPU v5e, v5p, TPU7x, H100 and B200 is it compute-bound?
+**Question 3 [MLA intensity]:** Kimi K2 and GLM-5 use MLA with 64 query heads rather than DeepSeek-V3's 128. What is the arithmetic intensity of their absorbed decode attention with an fp8 cache and with a bf16 cache? On which of H800/H100, H200, B200, GB200, TPU v5e, v5p and TPU7x is it compute-bound?
 
 {% details Click here for the answer. %}
 
-Per context token per layer the FLOPs are `2 * 64 * (576 + 512) = 139,264` and the bytes are 576 (fp8) or 1152 (bf16), so the intensity is **242 (fp8)** or **121 (bf16)**. Chip intensities in bf16 FLOPs are 240 (v5e), 164 (v5p), 311 (TPU7x), 296 (H100), 281 (B200). With an fp8 cache, 64-head MLA is compute-bound on v5p and just at the line on v5e, and memory-bound (by 15 to 25%) on the 2026 chips. With a bf16 cache it is memory-bound everywhere. So halving the heads relative to DeepSeek-V3 puts these models back on the memory-bound side of the line, which is probably the right side to be on given how expensive the FLOPs turned out to be for V3. Note that the intensity of MLA is proportional to $N$: it's a design knob.
+Per context token per layer the FLOPs are `2 * 64 * (576 + 512) = 139,264` and the bytes are 576 (fp8) or 1152 (bf16), so the intensity is **242 (fp8)** or **121 (bf16)**. Accelerator intensities in bf16 FLOPs are 296 (H800/H100), 206 (H200), 281 (B200), 312 (GB200), 240 (v5e), 164 (v5p), 311 (TPU7x). With an fp8 cache, 64-head MLA is compute-bound on the H200 and on v5p and just at the line on v5e, and memory-bound on the H800, B200, GB200 and TPU7x, with an intensity 14 to 22% below their rooflines. With a bf16 cache it is memory-bound everywhere. So halving the heads relative to DeepSeek-V3 puts these models back on the memory-bound side of the line, which is probably the right side to be on given how expensive the FLOPs turned out to be for V3. Note that the intensity of MLA is proportional to $N$: it's a design knob.
 
 {% enddetails %}
 
@@ -385,6 +385,6 @@ MLP FLOPs per token per layer: the 16 routed experts operate on the 3584-wide la
 
 {% enddetails %}
 
-**Question 8 [serving a million tokens, open-ended]:** Kimi K3 serves 1M-token contexts. Using its cache and state sizes, how many concurrent 1M-token sequences fit on a 64-chip TPU7x group after the weights (1.42TB with fp4 experts)? What is the lower bound on step time at that batch? Now consider a coding agent that keeps a 400k-token repository in context and makes 200 tool calls, each appending 2k tokens. How much prefix-cache memory does one such session pin, and for how long? What does this say about where the cache should live between turns?
+**Question 8 [serving a million tokens, open-ended]:** Kimi K3 serves 1M-token contexts. Using its cache and state sizes, how many concurrent 1M-token sequences fit in a GB200 NVL72 rack (72 GPUs, 186GB each) after the weights (1.42TB with fp4 experts), and how many in Kimi's own smallest deployment unit of 16 H200s? What is the lower bound on step time at that batch on each? (Redo it for a 64-chip TPU7x group if you like; the numbers land within a few percent of the rack.) Now consider a coding agent that keeps a 400k-token repository in context and makes 200 tool calls, each appending 2k tokens. How much prefix-cache memory does one such session pin, and for how long? What does this say about where the cache should live between turns?
 
 <h3 markdown=1 class="next-section">That's all for Section 14. Section 15, on how training changed (fp8 and fp4, Muon, multi-token prediction and reinforcement learning), is [here](../training-2026).</h3>

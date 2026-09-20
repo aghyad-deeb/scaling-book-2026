@@ -147,16 +147,20 @@ def main():
 
     print()
     print("=" * 100)
-    print("SEQUENCES PER CHIP AT 128k CONTEXT (192GB chip, after weights spread over 64 chips)")
+    print("SEQUENCES PER GPU AT 128k CONTEXT, after weights are spread over the group")
     print("=" * 100)
-    for name, w_total, fn in [("DeepSeek-V3 fp8 (MLA)", 671e9, lambda S: mla(S, 61)), ("DeepSeek-V3.2 fp8 (stored incl. indexer)", 685e9, lambda S: 61 * 704 * S),
-                              ("Kimi K3 fp4 experts", 1.42e12, lambda S: 24 * 576 * S + 69 * 96 * 128 * 128 * 2), ("Qwen3.8 fp8", 2.4e12, lambda S: 23 * 2048 * S + 69 * 128 ** 3 * 4),
-                              ("LLaMA 3 405B int8 (GQA)", 405e9, lambda S: gqa(S, 126, 8, 128))]:
-        per_chip_w = w_total / 64
-        free = 192e9 - per_chip_w
-        per_seq = fn(131072)
-        print(f"{name:<44} weights/chip {per_chip_w / GB:5.1f} GB, per-seq state {per_seq / GB:5.2f} GB -> {free / per_seq:6.0f} sequences per chip, {64 * free / per_seq:6.0f} per 64-chip group")
-
+    models = [("DeepSeek-V3 fp8 (MLA)", 671e9, lambda S: mla(S, 61)), ("DeepSeek-V3.2 fp8 (stored incl. indexer)", 685e9, lambda S: 61 * 704 * S),
+              ("Kimi K3 fp4 experts", 1.42e12, lambda S: 24 * 576 * S + 69 * 96 * 128 * 128 * 2), ("Qwen3.8 fp8", 2.4e12, lambda S: 23 * 2048 * S + 69 * 128 ** 3 * 4),
+              ("LLaMA 3 405B int8 (GQA)", 405e9, lambda S: gqa(S, 126, 8, 128))]
+    for hw, hbm, group in [("GB200 NVL72, 64 GPUs of the rack", 186e9, 64), ("TPU7x 4x4x4 cube", 192e9, 64), ("H200 node group, 144 GPUs (DeepSeek EP144)", 141e9, 144), ("H800, 144 GPUs (DeepSeek EP144, ~22GB weights incl. replicated attention)", 80e9, 144)]:
+        print(f"-- {hw}")
+        for name, w_total, fn in models:
+            per_w = w_total / group if "H800" not in hw or "V3" not in name else 22e9   # Section 16: 22GB per H800 for V3 under EP144
+            free = hbm - per_w
+            per_seq = fn(131072)
+            if free <= 0:
+                print(f"   {name:<44} weights/GPU {per_w / GB:5.1f} GB > HBM"); continue
+            print(f"   {name:<44} weights/GPU {per_w / GB:5.1f} GB, per-seq state {per_seq / GB:5.2f} GB -> {free / per_seq:6.0f} sequences per GPU, {group * free / per_seq:6.0f} per group")
 
 if __name__ == "__main__":
     main()

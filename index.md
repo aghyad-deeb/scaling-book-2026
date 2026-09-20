@@ -34,6 +34,8 @@ toc:
   - name: "What We Left Out"
 ---
 
+{% include figure.liquid path="assets/img/hero-hardware.svg" class="img-fluid" %}
+
 _This is an independent supplement to How to Scale Your Model; the book's authors didn't write or review it. The book made one promise: that with a handful of hardware constants and the habit of counting FLOPs and bytes, you can predict how a model will run before you run it. This update keeps that promise for the models of 2026. It adds four sections, numbered 13 to 16 so that they slot in after the GPU section, and it is meant to be read after [Sections 4](https://jax-ml.github.io/scaling-book/transformers), [5](https://jax-ml.github.io/scaling-book/training) and [7](https://jax-ml.github.io/scaling-book/inference) of the original._
 
 ## What Changed, on One Page
@@ -54,45 +56,48 @@ The reference model in the book is LLaMA 3-70B: 70B dense parameters, 8 KV heads
 
 * **The serving workload flipped.** DeepSeek's published production system spends about 1.4 node-days decoding for every node-day of prefill, the inverse of the chat-era ratio in [Section 8](https://jax-ml.github.io/scaling-book/applied-inference), and half of its decode step goes to the expert AllToAll over InfiniBand, a term Section 7's decode roofline doesn't have. [Section 16](applied-frontier).
 
-* **Hardware moved to meet the models, unevenly.** TPU7x and the Blackwell GPUs put 180 to 192GB on a chip and the GB200 NVL72 puts 72 GPUs in one NVLink domain, so a trillion-parameter model fits in one fast fabric. But TPU7x's ICI didn't grow with its FLOPs, and every model-parallel roofline in the book is 5x tighter on it than on v5p. The table below has the constants.
+* **Hardware moved to meet the models, unevenly.** The Blackwell GPUs and TPU7x put 180 to 192GB on a chip and the GB200 NVL72 puts 72 GPUs in one NVLink domain, so a trillion-parameter model fits in one fast fabric. NVLink grew with GPU FLOPs, so the in-domain intensity stayed near 2,500 from H100 to GB200; the InfiniBand link out of the node didn't, so the cross-node intensity went from 19,800 to 45,000 per GPU, and the rack answers that by pulling shared weights in once through 3.6TB/s of egress. TPU7x's ICI didn't grow with its FLOPs at all, and every model-parallel roofline in the book is 5x tighter on it than on v5p. The table below has the constants.
 
 ## The Hardware That Runs 2026 Models
 
-The book's rooflines need three numbers per chip: FLOPs/s, HBM bandwidth, and network bandwidth. Here they are for what is shipping, with the two operational intensities that appear in every derivation: $C / W_\text{hbm}$ (the decode critical batch) and $C / W_\text{net}$ (the training critical batch per axis, or per GPU). FLOPs are dense, no structured sparsity, in bf16 unless the column says otherwise.<d-footnote>Sources: Google Cloud TPU documentation for v5p, v6e and TPU7x; NVIDIA product pages for H100/H200, HGX B200, GB200 NVL72, GB300 NVL72 and Vera Rubin NVL72 (which quote sparse figures by default; we halve them); AMD product pages for MI355X and MI455X. TPU ICI figures follow the original book's tables (9e10 bytes/s one-way per link, which is Google's 200 GB/s bidirectional per axis rounded down). GB200 per-GPU figures are the rack totals divided by 72. Rubin is "in full production" per NVIDIA's August 2026 earnings but not broadly available; its product page and its launch blog disagree on NVLink 6 (3.0 versus 3.6 TB/s) and HBM4 bandwidth (19.2 versus 22 TB/s); we use the product page. AMD's MI455X page and its Helios page disagree on HBM bandwidth (23.3 versus 19.6 TB/s). AMD's MI355X page gives 153 GB/s per Infinity Fabric link without stating a direction; we assume bidirectional, as AMD states for the MI455X, and halve the seven-link total. GB300 and Rubin HBM use the per-GPU specification (288 GB) rather than the rounded rack total. Where a vendor page labels a figure dense, as Rubin's product page does for its training columns, we use it as given. TPU 8t and 8i were announced in April 2026 with FP4 figures only (12.6 and 10.1 PFLOPs, 216 and 288 GB, 6.5 and 8.6 TB/s, twice TPU7x's ICI); Google has not published their bf16 or fp8 rates, so they are omitted.</d-footnote>
+The book's rooflines need four numbers per accelerator: FLOPs/s, HBM bandwidth, scale-up network bandwidth (NVLink or ICI) and scale-out network bandwidth (InfiniBand or DCN). Here they are for what the 2026 models run on, GPUs first since that is where nearly all of them were trained and are served, with the operational intensities that appear in every derivation: $C / W_\text{hbm}$ (the decode critical batch) and $\alpha = C / W_\text{net}$ over the scale-up network (per GPU, or per ICI axis). FLOPs are dense, no structured sparsity, in bf16 unless the column says otherwise. All bandwidths are one-way, as in the book; NVIDIA's NVLink figures are bidirectional and have been halved.<d-footnote>Sources: Google Cloud TPU documentation for v5p, v6e and TPU7x; NVIDIA product pages for H100/H200, HGX B200, GB200 NVL72, GB300 NVL72 and Vera Rubin NVL72 (which quote sparse figures by default; we halve them); AMD product pages for MI355X and MI455X. TPU ICI figures follow the original book's tables (9e10 bytes/s one-way per link, which is Google's 200 GB/s bidirectional per axis rounded down). GB200 per-GPU figures are the rack totals divided by 72. Rubin is "in full production" per NVIDIA's August 2026 earnings but not broadly available; its product page and its launch blog disagree on NVLink 6 (3.0 versus 3.6 TB/s) and HBM4 bandwidth (19.2 versus 22 TB/s); we use the product page. AMD's MI455X page and its Helios page disagree on HBM bandwidth (23.3 versus 19.6 TB/s). AMD's MI355X page gives 153 GB/s per Infinity Fabric link without stating a direction; we assume bidirectional, as AMD states for the MI455X, and halve the seven-link total. GB300 and Rubin HBM use the per-GPU specification (288 GB) rather than the rounded rack total. Where a vendor page labels a figure dense, as Rubin's product page does for its training columns, we use it as given. TPU 8t and 8i were announced in April 2026 with FP4 figures only (12.6 and 10.1 PFLOPs, 216 and 288 GB, 6.5 and 8.6 TB/s, twice TPU7x's ICI); Google has not published their bf16 or fp8 rates, so they are omitted.</d-footnote>
 
-| Chip | bf16 PFLOPs/s | fp8 | fp4 | HBM | HBM TB/s | Scale-up egress per chip | Domain | $C/W_\text{hbm}$ | $\alpha = C/W_\text{net}$ |
-| :--- | ------------: | --: | --: | --: | -------: | :----------------------- | -----: | ---------------: | ---------------: |
-| TPU v5p (2023) | 0.46 | 0.92 (int8) | | 96 GB | 2.8 | 6 x 90 GB/s | 8,960 | 164 | 2,550 per axis |
-| TPU v6e (2024) | 0.92 | 1.84 (int8) | | 32 GB | 1.6 | 4 x 90 GB/s | 256 | 575 | 5,110 per axis |
-| TPU7x, Ironwood (2025) | 2.3 | 4.6 | | 192 GB | 7.4 | 6 x 90 GB/s | 9,216 | 311 | 12,800 per axis |
-| H100 (2022) | 0.99 | 1.98 | | 80 GB | 3.35 | 450 GB/s | 8 | 296 | 2,200 |
-| H200 (2024) | 0.99 | 1.98 | | 141 GB | 4.8 | 450 GB/s | 8 | 206 | 2,200 |
-| B200, HGX (2025) | 2.25 | 4.5 | 9 | 180 GB | 8 | 900 GB/s | 8 | 281 | 2,500 |
-| GB200 NVL72, per GPU (2025) | 2.5 | 5 | 10 | 186 GB | 8 | 900 GB/s | 72 | 312 | 2,800 |
-| GB300 NVL72, per GPU (2026) | 2.5 | 5 | 15 | 288 GB | 8 | 900 GB/s | 72 | 312 | 2,800 |
-| Vera Rubin NVL72, per GPU (2026, in production) | 4 | 17.5 | 35 | 288 GB | 19.2 | 1,500 GB/s | 72 | 208 | 2,700 |
-| AMD MI355X (2025) | 2.5 | 5 | 10.1 | 288 GB | 8 | about 535 GB/s | 8 | 312 | 4,700 |
-| AMD MI455X, Helios (2026) | 5 | 20.1 | 40.3 | 432 GB | 19.6 to 23.3 | 1,800 GB/s | 72 | 230 | 2,800 |
+| Accelerator | bf16 PFLOPs/s | fp8 | fp4 | HBM | HBM TB/s | Scale-up egress | Domain | Scale-out egress | $C/W_\text{hbm}$ | $\alpha = C/W_\text{net}$ |
+| :--- | ------------: | --: | --: | --: | -------: | :-------------- | -----: | :--------------- | ---------------: | ---------------: |
+| H800 SXM (2023; DeepSeek, Kimi) | 0.99 | 1.98 | | 80 GB | 3.35 | 200 GB/s (160 measured) | 8 | 50 GB/s per GPU | 296 | 4,950 |
+| H100 (2022) | 0.99 | 1.98 | | 80 GB | 3.35 | 450 GB/s | 8 | 50 GB/s per GPU | 296 | 2,200 |
+| H200 (2024) | 0.99 | 1.98 | | 141 GB | 4.8 | 450 GB/s | 8 | 50 GB/s per GPU | 206 | 2,200 |
+| B200, HGX (2025) | 2.25 | 4.5 | 9 | 180 GB | 8 | 900 GB/s | 8 | 50 GB/s per GPU | 281 | 2,500 |
+| GB200 NVL72, per GPU (2025; Nemotron 3) | 2.5 | 5 | 10 | 186 GB | 8 | 900 GB/s | 72 | 50 GB/s per GPU, 3.6 TB/s per rack | 312 | 2,800 |
+| GB300 NVL72, per GPU (2026) | 2.5 | 5 | 15 | 288 GB | 8 | 900 GB/s | 72 | 100 GB/s per GPU, 7.2 TB/s per rack | 312 | 2,800 |
+| Vera Rubin NVL72, per GPU (2026, in production) | 4 | 17.5 | 35 | 288 GB | 19.2 | 1,500 GB/s | 72 | 200 GB/s per GPU | 208 | 2,700 |
+| AMD MI355X (2025) | 2.5 | 5 | 10.1 | 288 GB | 8 | about 535 GB/s | 8 | 50 GB/s per GPU | 312 | 4,700 |
+| AMD MI455X, Helios (2026) | 5 | 20.1 | 40.3 | 432 GB | 19.6 to 23.3 | 1,800 GB/s | 72 | 100 GB/s per GPU | 230 | 2,800 |
+| TPU7x, Ironwood (2025) | 2.3 | 4.6 | | 192 GB | 7.4 | 6 x 90 GB/s | 9,216 | 12.5 GB/s per chip | 311 | 12,800 per axis |
+| TPU v6e (2024; Gemma 4) | 0.92 | 1.84 (int8) | | 32 GB | 1.6 | 4 x 90 GB/s | 256 | 12.5 GB/s per chip | 575 | 5,110 per axis |
+| TPU v5p (2023) | 0.46 | 0.92 (int8) | | 96 GB | 2.8 | 6 x 90 GB/s | 8,960 | 6.25 GB/s per chip | 164 | 2,550 per axis |
 
 {% include figure.liquid path="assets/img/chip-intensity.svg" class="img-fluid" caption="<b>Figure:</b> the HBM arithmetic intensity $C / W_\text{hbm}$ of each chip at each precision it supports. In bf16 the number has sat between 160 and 320 for four generations, so the book's decode rules of thumb still hold; in fp8 and fp4 the same chips are two to six times more compute-heavy, and every batch-size threshold moves with them." %}
 
-Domain is the number of chips in one scale-up fabric, an ICI pod or an NVLink domain. A few things jump out of the last two columns.
+Domain is the number of accelerators in one scale-up fabric, an NVLink domain or an ICI pod; scale-out egress is what one GPU (or one rack, or one TPU host's share) can push into the InfiniBand or data-center network. A few things jump out of the last three columns.
 
 **The HBM intensity barely moved.** From v5p to TPU7x, from H100 to Rubin, the bf16 number stays between 160 and 320 (TPU v6e, with only 32GB of HBM, is the exception at 575). Chips got faster and their memory got faster in step, so [Section 7](https://jax-ml.github.io/scaling-book/inference)'s "batch 240 to be compute-bound" rule still holds in bf16. It doesn't hold once the matmuls run in fp8 or fp4, where the same chip's intensity doubles and quadruples: 1,875 for fp4 on GB300.
 
-**The network intensity did move, on TPUs.** TPU7x has five times the FLOPs of v5p and the same ICI per link, so its per-axis intensity is 12,800 against 2,550 (`2.3e15 / 1.8e11 = 12,800`). [Section 5](https://jax-ml.github.io/scaling-book/training)'s constants (FSDP compute-bound above 850 tokens per chip, tensor parallelism up to $3F/2550$) are v5p constants; on Ironwood they are 4,270 tokens and $3F/12800$. The GPUs kept their per-GPU intensity near 2,500 by growing NVLink with the chip, and grew the *domain* instead, from 8 to 72.
+**On GPUs the scale-up intensity held and the scale-out intensity didn't.** NVLink doubled with each generation's FLOPs, so $\alpha$ inside the domain sits between 2,200 and 2,800 from H100 to GB200 and [Section 12](https://jax-ml.github.io/scaling-book/gpus)'s tensor-parallel and in-node rooflines carry over unchanged. The InfiniBand NIC stayed at 400Gb/s per GPU through Blackwell, so the cross-node intensity went from `990e12 / 50e9 = 19,800` on an H100 to 45,000 on a B200, and [Section 12](https://jax-ml.github.io/scaling-book/gpus)'s cross-node FSDP threshold (2,475 tokens per GPU on H100 nodes) becomes 5,625 on HGX B200 nodes. The GB200 NVL72's answer is the domain: 72 GPUs share one NVLink fabric, and a rack pulls each weight shard in once through 3.6TB/s of egress, which brings that threshold down to 694. The H800 is the odd one out: NVIDIA cut its NVLink to 200GB/s each way, so DeepSeek's in-node intensity is 4,950, worse than an H100's 2,200 and a real constraint on the expert AllToAll ([Section 13](moe)).
+
+**On TPUs the scale-up intensity moved.** TPU7x has five times the FLOPs of v5p and the same ICI per link, so its per-axis intensity is 12,800 against 2,550 (`2.3e15 / 1.8e11 = 12,800`). [Section 5](https://jax-ml.github.io/scaling-book/training)'s constants (FSDP compute-bound above 850 tokens per chip, tensor parallelism up to $3F/2550$) are v5p constants; on Ironwood they are 4,270 tokens and $3F/12800$.
 
 **fp4 is where the compute is going.** GB300 has 6x its bf16 rate in fp4, Rubin nearly 9x, MI455X 8x. Nothing in the memory or network columns grew like that, which tells you what the vendors think these chips are for: fp4 serving, with bf16 training as the workload that has to fit around it.
 
 ## The Four New Sections
 
-* [**Section 13: How to Think About Mixture of Experts**](moe). How many parameters, FLOPs and bytes does a 2.8T-parameter MoE really have? Why do sparse models want thousands of tokens per chip to be compute-bound? How much expert parallelism can you do before ICI or NVLink runs out, how does it combine with FSDP, and what do DeepSeek, Kimi and Google actually do?
+* [**Section 13: How to Think About Mixture of Experts**](moe). How many parameters, FLOPs and bytes does a 2.8T-parameter MoE really have? Why do sparse models want thousands of tokens per GPU to be compute-bound? How much expert parallelism can you do before NVLink, InfiniBand or ICI runs out, how does it combine with FSDP, and what do DeepSeek, Kimi, NVIDIA and Google actually do?
 
 * [**Section 14: All About the KV Cache**](attention). How many bytes does each attention mechanism in a 2026 model store per token, and how many does it read per decoded token? How does latent attention make decode compute-bound? When does a sliding window, a top-$k$ indexer, a linear-attention state or DeepSeek-V4's token compression pay off, and what does that do to the decode and long-context training rooflines?
 
 * [**Section 15: How Training Changed**](training-2026). What exactly runs in fp8, and which rooflines get harder because of it? Is anyone really pretraining in fp4? What does Muon cost and why does it need a whole-matrix gather? How much does multi-token prediction buy? Why is reinforcement learning bound by generation rather than gradient steps, and how do runs reach a million tokens of context?
 
-* [**Section 16: Serving DeepSeek-V3 and Training DeepSeek-V4**](applied-frontier). Do the rooflines reproduce DeepSeek's published production numbers, and which term was missing? What changes on a GB200 NVL72? How long would a V4-class pretraining run take on a TPU7x pod, and how would you shard it?
+* [**Section 16: Serving DeepSeek-V3 and Training DeepSeek-V4**](applied-frontier). Do the rooflines reproduce DeepSeek's published production numbers, and which term was missing? What changes on a GB200 NVL72? How long would a V4-class pretraining run take on 128 GB200 racks, or on a TPU7x pod, and how would you shard it on each?
 
 Sections 13 to 15 end with takeaways and worked problems, most answered behind a click and the last few left for you. Section 16, like Sections 6 and 8, works its questions inline and leaves its closing problems unanswered.
 
@@ -100,13 +105,15 @@ Sections 13 to 15 end with takeaways and worked problems, most answered behind a
 
 With one exception (the H800 spec sheet in Question 7), nothing below is a mistake in the original; each is a place where the 2026 models or hardware move a number or qualify a claim.
 
-* **Section 4, Question 7** computes DeepSeek-V3's utilization at 22% using an H800 figure of 1.51e15 fp8 FLOPs/s from a vendor sheet. The H800 SXM has H100 tensor cores at 1.98e15 dense fp8, which gives about 17% (16.5% on the book's 2.79M total hours, 17.3% on the 2.66M pretraining hours). [Section 15](training-2026) redoes it either way, and [Section 13](moe) explains why it is low.
+* **Section 4, Question 7** computes DeepSeek-V3's utilization at 22% using an H800 figure of 1.51e15 fp8 FLOPs/s from a vendor sheet. That is the PCIe H800's rate; the SXM part DeepSeek used has H100 tensor cores at 1.98e15 dense fp8, which gives about 17% (16.5% on the book's 2.79M total hours, 17.3% on the 2.66M pretraining hours). [Section 15](training-2026) redoes it either way, and [Section 13](moe) explains why it is low.
 
 * **Section 4's** "attention FLOPs dominate above $T = 8D$" assumes MHA and $F = 4D$. For DeepSeek-V3 the crossover is 19k tokens, against 86k for a dense model of the same width by the same formula, because the MLP is sparse and there are 128 heads. [Section 14](attention) has the general formula.
 
-* **Section 5's** constants 2,550 and 850 are TPU v5p numbers. On TPU7x they are 12,800 and 4,270, and every parallelism threshold in that section tightens by 5x. See the table above and [Section 13](moe).
+* **Section 5's** constants 2,550 and 850 are TPU v5p numbers. On TPU7x they are 12,800 and 4,270, and every parallelism threshold in that section tightens by 5x. [Section 12's](https://jax-ml.github.io/scaling-book/gpus) 2,200 and 2,475 are H100 numbers; on HGX B200 nodes the cross-node one is 5,625, and on a GB200 NVL72 rack, where the whole rack shares one gather, 694. See the table above and [Section 13](moe).
 
-* **Section 7** treats attention as always bandwidth-bound during generation. That's true for grouped-query attention (intensity equal to the group size, about 8). Absorbed multi-head latent attention with 128 heads and an fp8 cache has an intensity of 480 and is compute-bound at long context on every current chip; with a bf16 cache, or with the 64 heads of Kimi K2 and GLM-5, it sits 15 to 25% below the roofline of TPU7x, H100 and the Blackwell parts. [Section 14](attention).
+* **Section 12** gives the H800's NVLink as 300GB/s. NVIDIA's partners list 400GB/s bidirectional, 200GB/s each way in the book's convention, and DeepSeek measures about 160GB/s in practice against 50GB/s of InfiniBand. [Section 13](moe) uses 200 and 160.
+
+* **Section 7** treats attention as always bandwidth-bound during generation. That's true for grouped-query attention (intensity equal to the group size, about 8). Absorbed multi-head latent attention with 128 heads and an fp8 cache has an intensity of 480 and is compute-bound at long context on every current GPU and TPU; with a bf16 cache, or with the 64 heads of Kimi K2 and GLM-5, it sits 14 to 22% below the roofline of the H800, the Blackwell parts and TPU7x, and above the H200's. [Section 14](attention).
 
 * **Section 7's** Appendix D already points at embedded drafter heads (EAGLE, Medusa, DeepSeek-V3's own). Multi-token prediction is that head, now trained into most 2026 MoEs (DeepSeek-V4.1-Flash instead trains its drafter afterwards), and its training cost and measured acceptance lengths are in [Section 15](training-2026).
 

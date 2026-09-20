@@ -25,10 +25,17 @@ class Chip:
     hbm_bw: float              # bytes/s
     c_bf16: float              # FLOPs/s
     c_fp8: float               # FLOPs/s (int8 on older TPUs)
-    ici_bidi: float            # bidirectional bytes/s per link / axis (TPU) or NVLink egress (GPU)
+    ici_bidi: float            # one-way bytes/s per ICI link (TPU, the book's 9e10/1.8e11) or NVLink egress per GPU (GPU)
     axes: int                  # number of torus axes (TPU); 1 for GPU
-    node_egress: Optional[float] = None   # scale-out egress per chip (GPU: IB per GPU)
+    node_egress: Optional[float] = None   # scale-out egress per chip (GPU: IB per GPU, one-way)
     c_fp4: Optional[float] = None
+    domain: int = 8            # accelerators sharing the scale-up fabric (8-GPU node, 72-GPU NVL72 rack)
+    measured_egress: Optional[float] = None  # achieved NVLink egress where a lab published it (H800: DeepSeek's 160 GB/s)
+
+    @property
+    def collective_bw_cross_node(self):
+        """W_collective for FSDP across nodes/racks: the whole domain's scale-out egress (Section 12)."""
+        return self.node_egress * self.domain
 
     @property
     def alpha_hbm_bf16(self):
@@ -49,10 +56,16 @@ V5E = Chip("TPU v5e", 16e9, 8.2e11, 1.97e14, 3.94e14, 9e10, 2)
 V5P = Chip("TPU v5p", 96e9, 2.8e12, 4.59e14, 9.18e14, 1.8e11, 3)
 V6E = Chip("TPU v6e", 32e9, 1.6e12, 9.20e14, 1.84e15, 1.8e11, 2)
 TPU7X = Chip("TPU7x (Ironwood)", 192e9, 7.4e12, 2.30e15, 4.61e15, 1.8e11, 3)
+# GPUs: NVLink egress is one-way (NVIDIA quotes bidirectional; halved). H800 = H100 tensor cores and HBM with NVLink cut to 400 GB/s bidirectional.
+H800 = Chip("H800", 80e9, 3.35e12, 9.9e14, 1.98e15, 2.0e11, 1, node_egress=5e10, measured_egress=1.6e11)
 H100 = Chip("H100", 80e9, 3.35e12, 9.9e14, 1.98e15, 4.5e11, 1, node_egress=5e10)
 H200 = Chip("H200", 141e9, 4.8e12, 9.9e14, 1.98e15, 4.5e11, 1, node_egress=5e10)
-B200 = Chip("B200", 192e9, 8.0e12, 2.25e15, 4.5e15, 9e11, 1, node_egress=5e10, c_fp4=9e15)
-CHIPS = [V5E, V5P, V6E, TPU7X, H100, H200, B200]
+B200 = Chip("B200 (HGX)", 180e9, 8.0e12, 2.25e15, 4.5e15, 9e11, 1, node_egress=5e10, c_fp4=9e15)
+GB200 = Chip("GB200 NVL72", 186e9, 8.0e12, 2.5e15, 5e15, 9e11, 1, node_egress=5e10, c_fp4=10e15, domain=72)
+GB300 = Chip("GB300 NVL72", 288e9, 8.0e12, 2.5e15, 5e15, 9e11, 1, node_egress=1e11, c_fp4=15e15, domain=72)
+CHIPS = [H800, H100, H200, B200, GB200, GB300, TPU7X, V5P, V6E, V5E]
+GPUS = [H800, H100, H200, B200, GB200, GB300]
+TPUS = [TPU7X, V5P, V6E, V5E]
 
 # ----------------------------------------------------------------------------
 # Models
@@ -283,6 +296,20 @@ def fmt(x, unit=""):
     return f"{x:.3g}{unit}"
 
 
+def fsdp_critical_tokens_gpu(chip: Chip, E=1, k=1, Z=1, P=1, fp8_flops=False, gather_bytes=2):
+    """Per-GPU tokens for FSDP across nodes/racks to be compute-bound (Section 12 convention):
+    B/N > (E/(kZP)) * C / W_collective, with W_collective the domain's total scale-out egress.
+    gather_bytes=1 for fp8 weight gathers (halves the threshold)."""
+    C = chip.c_fp8 if fp8_flops else chip.c_bf16
+    return (E / (k * Z * P)) * (C / chip.collective_bw_cross_node) * (gather_bytes / 2)
+
+
+def gather_layout_max_Z_gpu(chip: Chip, k, F, cross_node=False):
+    """Largest EP degree for which the AllGather+ReduceScatter expert layout is compute-bound: Z < 1.5 k F / alpha."""
+    W = chip.node_egress if cross_node else chip.ici_bidi
+    return 1.5 * k * F / (chip.c_bf16 / W)
+
+
 def report():
     print("=" * 78)
     print("HARDWARE (from the book's tables)")
@@ -329,22 +356,35 @@ def report():
     print("=" * 78)
     for m in (DEEPSEEK_V3, KIMI_K2, QWEN3_235B, GPT_OSS_120B, LLAMA4_MAVERICK):
         row = [f"{m.name:<22}"]
-        for c in (V5E, V6E, TPU7X, H100, B200):
+        for c in (H800, H200, B200, GB200, TPU7X, V5E):
             row.append(f"{c.name.split(' (')[0]}: bf16 {moe_decode_critical_batch(m, c, 2):>7,.0f} | fp8w+fp8 {moe_decode_critical_batch(m, c, 1, True):>7,.0f}")
         print("  ".join(row))
 
     print()
     print("=" * 78)
-    print("EXPERT PARALLELISM: expert width F needed to be compute-bound (bf16 dispatch+combine; three matmuls)")
+    print("EXPERT PARALLELISM on GPUs: expert width F needed to be compute-bound (three matmuls; fp8 dispatch + bf16 combine)")
     print("=" * 78)
-    for c in (V5E, V5P, V6E, TPU7X):
+    for c in GPUS:
+        nv_bf = ep_critical_expert_width_gpu(c, False, 1, 2); ib_bf = ep_critical_expert_width_gpu(c, True, 1, 2)
+        extra = f"   measured NVLink {c.measured_egress / 1e9:.0f} GB/s: F>{nv_bf * c.ici_bidi / c.measured_egress:,.0f} / {2 * nv_bf * c.ici_bidi / c.measured_egress:,.0f}" if c.measured_egress else ""
+        print(f"{c.name:<14} NVLink alpha={c.c_bf16 / c.ici_bidi:,.0f}: F>{nv_bf:,.0f} (bf16 matmuls) / {2 * nv_bf:,.0f} (fp8 matmuls)   IB alpha={c.c_bf16 / c.node_egress:,.0f}: F>{ib_bf:,.0f} / {2 * ib_bf:,.0f}{extra}")
+    print()
+    print("=" * 78)
+    print("EXPERT PARALLELISM on TPUs: F needed (bf16 dispatch+combine; three matmuls; wraparound on the EP axis assumed)")
+    print("=" * 78)
+    for c in TPUS:
         print(f"{c.name:<18} alpha_ici/axis={c.alpha_ici:,.0f}  " +
               "  ".join(f"A={A}: F>{ep_critical_expert_width(c, A):,.0f}" for A in (2, 4, 8, 16)) +
               f"   [fp8 dispatch: x0.75]")
-    for c in (H100, B200):
-        print(f"{c.name:<18} NVLink: F>{ep_critical_expert_width_gpu(c):,.0f}   cross-node IB: F>{ep_critical_expert_width_gpu(c, True):,.0f}"
-              f"   (fp8 dispatch: {ep_critical_expert_width_gpu(c, False, 1, 2):,.0f} / {ep_critical_expert_width_gpu(c, True, 1, 2):,.0f})")
-
+    print()
+    print("=" * 78)
+    print("FSDP across nodes/racks on GPUs: tokens per GPU to be compute-bound (bf16 matmuls, bf16 gathers)")
+    print("=" * 78)
+    for c in GPUS:
+        dense = fsdp_critical_tokens_gpu(c)
+        print(f"{c.name:<14} W_collective = {c.domain} x {c.node_egress / 1e9:.0f} GB/s = {c.collective_bw_cross_node / 1e12:.1f} TB/s -> dense {dense:,.0f};  DeepSeek-V3 pure FSDP (E/k=32) {fsdp_critical_tokens_gpu(c, 256, 8):,.0f};  with EP64 {fsdp_critical_tokens_gpu(c, 256, 8, 64):,.0f};  EP64+PP16 {fsdp_critical_tokens_gpu(c, 256, 8, 64, 16):,.0f};  V4-Pro EP64 fp8 FLOPs {fsdp_critical_tokens_gpu(c, 384, 6, 64, 1, True):,.0f}")
+    print(f"DeepSeek-V3 had 62.9e6 / 2048 = {62.9e6 / 2048:,.0f} tokens per GPU; decode EP144 at 88 seq/GPU: {144 * 88 * 8 / 288:,.0f} tokens per expert copy per step")
+    print(f"gather layout max Z for DeepSeek-V3 (kF=16384): H100 NVLink {gather_layout_max_Z_gpu(H100, 8, 2048):.0f}, H100 IB {gather_layout_max_Z_gpu(H100, 8, 2048, True):.1f}")
 
 if __name__ == "__main__":
     report()

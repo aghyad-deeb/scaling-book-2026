@@ -368,18 +368,19 @@ def fig_rl_loop():
 # ----------------------------------------------------------------------------
 def fig_chip_intensity():
     chips = [
-        ("TPU v5p", 0.46e15, 0.92e15, None, 2.8e12, 5.4e11),
-        ("TPU v6e", 0.92e15, 1.84e15, None, 1.6e12, 3.6e11),
-        ("TPU7x", 2.3e15, 4.61e15, None, 7.4e12, 5.4e11),
-        ("H100", 0.99e15, 1.98e15, None, 3.35e12, 4.5e11),
+        ("H800/H100", 0.99e15, 1.98e15, None, 3.35e12, 4.5e11),
+        ("H200", 0.99e15, 1.98e15, None, 4.8e12, 4.5e11),
         ("B200", 2.25e15, 4.5e15, 9e15, 8e12, 9e11),
         ("GB300", 2.5e15, 5e15, 15e15, 8e12, 9e11),
         ("Rubin", 4e15, 17.5e15, 35e15, 19.2e12, 1.5e12),
         ("MI455X", 5e15, 20.1e15, 40.3e15, 21.5e12, 1.8e12),
+        ("TPU7x", 2.3e15, 4.61e15, None, 7.4e12, 5.4e11),
+        ("TPU v5p", 0.46e15, 0.92e15, None, 2.8e12, 5.4e11),
+        ("TPU v6e", 0.92e15, 1.84e15, None, 1.6e12, 3.6e11),
     ]
     W, H = 780, 420
     p = [f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {W} {H}' width='{W}' height='{H}'>", "<rect width='100%' height='100%' fill='white'/>"]
-    p.append(f"<text x='390' y='26' text-anchor='middle' font-size='14' font-weight='bold' fill='#222' {FONT}>Arithmetic intensity of the chip, C / W_hbm, by precision (dense FLOPs)</text>")
+    p.append(f"<text x='390' y='26' text-anchor='middle' font-size='14' font-weight='bold' fill='#222' {FONT}>Arithmetic intensity C / W_hbm by precision (dense FLOPs), GPUs then TPUs</text>")
     x0, y0, x1, y1 = 70, 50, 750, 340
     ymax = 2000
     for v in (0, 500, 1000, 1500, 2000):
@@ -388,7 +389,7 @@ def fig_chip_intensity():
         p.append(f"<text x='{x0 - 8}' y='{yy + 4:.1f}' text-anchor='end' font-size='11.5' fill='#444' {FONT}>{v}</text>")
     p.append(f"<line x1='{x0}' y1='{y1 - 240 / ymax * (y1 - y0):.1f}' x2='{x1}' y2='{y1 - 240 / ymax * (y1 - y0):.1f}' stroke='#b509ac' stroke-dasharray='5,4'/>")
     p.append(f"<line x1='{x0 + 10}' y1='{y0 + 34}' x2='{x0 + 42}' y2='{y0 + 34}' stroke='#b509ac' stroke-dasharray='5,4'/>")
-    p.append(f"<text x='{x0 + 48}' y='{y0 + 38}' font-size='12' fill='#b509ac' {FONT}>240, the book's bf16 critical batch size on TPU v5e</text>")
+    p.append(f"<text x='{x0 + 48}' y='{y0 + 38}' font-size='12' fill='#b509ac' {FONT}>240 to 300, the book's bf16 critical batch on TPU v5e and H100</text>")
     gw = (x1 - x0) / len(chips)
     colors = {"bf16": "#9e9e9e", "fp8": "#3182bd", "fp4": "#b509ac"}
     for i, (name, bf, f8, f4, hbm, net) in enumerate(chips):
@@ -416,7 +417,61 @@ def fig_chip_intensity():
     print("wrote chip-intensity.svg")
 
 
+
+def fig_hero():
+    """Landing-page banner: the three machines the 2026 open models actually run
+    on, drawn to a common scale of HBM bytes per fast domain."""
+    W, H = 900, 300
+    P = []
+    P.append(f"<rect x='0' y='0' width='{W}' height='{H}' fill='#fbfbfd'/>")
+    def tile(x, y, w, h, fill, stroke="#666"):
+        P.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{w:.1f}' height='{h:.1f}' rx='2' fill='{fill}' stroke='{stroke}' stroke-width='0.8'/>")
+    def label(x, y, t, size=13, bold=False, color="#222", anchor="middle"):
+        fw = " font-weight='bold'" if bold else ""
+        P.append(f"<text x='{x:.1f}' y='{y:.1f}' text-anchor='{anchor}' font-size='{size}'{fw} fill='{color}' {FONT}>{esc(t)}</text>")
+    # ---- panel 1: an 8-GPU H800 node (2024 serving: DeepSeek-V3 on 18 of these) ----
+    x0, y0 = 40, 60
+    label(x0 + 110, 40, "8 x H800 node", 14, True)
+    label(x0 + 110, 56, "80GB each, NVLink 400GB/s, one 400Gb/s NIC per GPU", 10, color="#666")
+    for i in range(8):
+        tile(x0 + i * 27, y0 + 30, 22, 60, "#dbe9f6")
+    tile(x0 - 4, y0 + 100, 8 * 27 + 4, 10, "#9ecae1")
+    label(x0 + 110, y0 + 128, "NVSwitch", 10, color="#666")
+    for i in range(8):
+        P.append(f"<line x1='{x0 + i * 27 + 11}' y1='{y0 + 110}' x2='{x0 + i * 27 + 11}' y2='{y0 + 150}' stroke='#bbb' stroke-width='1' stroke-dasharray='2,2'/>")
+    label(x0 + 110, y0 + 168, "InfiniBand, 50GB/s per GPU", 10, color="#666")
+    label(x0 + 110, y0 + 200, "640GB of HBM per fast domain", 12)
+    label(x0 + 110, y0 + 218, "DeepSeek-V3 decode: 18 nodes, 144-way EP", 11, color="#b509ac")
+    # ---- panel 2: GB200 NVL72 rack ----
+    x1 = 340
+    label(x1 + 110, 40, "GB200 NVL72 rack", 14, True)
+    label(x1 + 110, 56, "72 GPUs, 186GB each, NVLink 900GB/s to every other GPU", 10, color="#666")
+    for r in range(18):
+        for c in range(4):
+            tile(x1 + 25 + c * 44, y0 + 24 + r * 8.6, 38, 6.6, "#d2e7fd" if r not in (8, 9) else "#fbfbfd", "#7fa8d4" if r not in (8, 9) else "#fbfbfd")
+    tile(x1 + 25 + 4 * 44 - 176, y0 + 24 + 8 * 8.6, 176, 2 * 8.6 - 2, "#3182bd", "#3182bd")
+    label(x1 + 110, y0 + 24 + 9 * 8.6 + 3, "9 NVSwitch trays", 8, color="#fff")
+    label(x1 + 110, y0 + 200, "13.4TB of HBM per fast domain", 12)
+    label(x1 + 110, y0 + 218, "Nemotron 3 training, SGLang and Dynamo serving", 11, color="#b509ac")
+    # ---- panel 3: TPU7x 4x4x4 cube (one of 144 in a pod) ----
+    x2, y2 = 660, y0 + 30
+    label(x2 + 100, 40, "TPU7x 4x4x4 cube", 14, True)
+    label(x2 + 100, 56, "64 chips, 192GB each, 3D torus ICI at 180GB/s per axis", 10, color="#666")
+    s_ = 30
+    for k in range(4):           # depth layers drawn back to front
+        off = (3 - k) * 9
+        for i in range(4):
+            for j in range(4):
+                tile(x2 + 20 + i * s_ + off, y2 + 20 + j * s_ * 0.75 - off * 0.6 + 30, s_ - 4, s_ * 0.75 - 4, ("#efe3f2", "#e6cdeb", "#dcb6e3", "#d29fdb")[k], "#b98cc4")
+    label(x2 + 100, y0 + 200, "12.3TB of HBM per cube, 1.8PB per 9,216-chip pod", 12)
+    label(x2 + 100, y0 + 218, "Gemma 4 training (v6e); the TPU plan in Section 16", 11, color="#b509ac")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {W} {H}' width='{W}' height='{H}'>" + "".join(P) + "</svg>"
+    open(os.path.join(OUT, "hero-hardware.svg"), "w").write(svg)
+    print("wrote hero-hardware.svg")
+
+
 if __name__ == "__main__":
     fig_decode_breakdown()
     fig_rl_loop()
     fig_chip_intensity()
+    fig_hero()

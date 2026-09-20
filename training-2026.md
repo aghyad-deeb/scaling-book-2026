@@ -29,19 +29,19 @@ bibliography: update.bib
 toc:
   - name: "The 2026 Recipe at a Glance"
   - name: "Low Precision: fp8 Everywhere, fp4 Arriving"
-  - subsections:
+    subsections:
     - name: "The fp8 recipe"
     - name: "What fp8 does to the rooflines"
     - name: "fp4 pretraining"
     - name: "Quantization-aware training for the weights you ship"
   - name: "Muon Replaces Adam"
-  - subsections:
+    subsections:
     - name: "The update"
     - name: "What it costs"
     - name: "Distributing Muon"
   - name: "Multi-Token Prediction"
   - name: "Reinforcement Learning Is a Systems Problem"
-  - subsections:
+    subsections:
     - name: "The loop"
     - name: "Where the time goes"
     - name: "Colocated or disaggregated"
@@ -106,9 +106,9 @@ Every roofline in this book is a ratio of FLOPs to bytes. fp8 doubles $C$ and ha
 | Attention ([Section 14](../attention)) | KV cache | yes if KV is fp8 | unchanged |
 | Anything measured against HBM bandwidth with bf16 tensors | | no | doubles |
 
-For a concrete example, the ICI operational intensity of TPU7x goes from `2.3e15 / 1.8e11 = 12,800` in bf16 to `4.61e15 / 1.8e11 = 25,600` in fp8, and the HBM intensity from `2.3e15 / 7.4e12 = 311` to 623. The chip didn't change; the FLOPs ceiling did. If you run fp8 matmuls but keep bf16 activations in HBM, every "am I compute-bound" question in this book gets harder by 2x. So fp8 is a free 2x on the FLOPs and on nothing else; each roofline improves only where its bytes come down too.
+For a concrete example, take the H800 DeepSeek trained on. Its NVLink operational intensity goes from `990e12 / 200e9 = 4,950` in bf16 to 9,900 in fp8, its InfiniBand intensity from `990e12 / 50e9 = 19,800` to 39,600, and its HBM intensity from `990e12 / 3.35e12 = 296` to 591. On a GB200 the NVLink number goes from 2,780 to 5,560 and the HBM number from 312 to 625; on TPU7x the per-axis ICI intensity goes from 12,800 to 25,600. The GPU didn't change; the FLOPs ceiling did. If you run fp8 matmuls but keep bf16 activations in HBM, every "am I compute-bound" question in this book gets harder by 2x. So fp8 is a free 2x on the FLOPs and on nothing else; each roofline improves only where its bytes come down too.
 
-Let's also redo the utilization estimate from Question 7 of [Section 4](https://jax-ml.github.io/scaling-book/transformers) with better numbers. DeepSeek-V3 spent 2,664K H800-hours on 14.8T tokens at 37B active parameters, or `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs. An H800 has the same tensor cores as an H100, 1.98e15 dense fp8 FLOPs/s, so the utilization was `3.3e24 / (2.664e6 * 3600 * 1.98e15) = 17%`. (That section used a lower H800 figure from a vendor sheet and got 22%. Either way it is well under the 40 to 50% the book assumes for dense bf16 training on TPUs, and [Section 13](../moe) told you why: the cross-node expert AllToAll.)
+Let's also redo the utilization estimate from Question 7 of [Section 4](https://jax-ml.github.io/scaling-book/transformers) with better numbers. DeepSeek-V3 spent 2,664K H800-hours on 14.8T tokens at 37B active parameters, or `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs. An H800 has the same tensor cores as an H100, 1.98e15 dense fp8 FLOPs/s, so the utilization was `3.3e24 / (2.664e6 * 3600 * 1.98e15) = 17%`. DeepSeek's later hardware paper gives the steady-state figure directly: 385 TFLOP/s per GPU counting attention FLOPs, which they report as 39% of *bf16* peak and which is 19% of the fp8 peak the matmuls actually ran at.<d-cite key="deepseek_isca"></d-cite> (Section 4 used 1.51e15, which is the PCIe H800's rate, and got 22%. Either way it is well under the 40 to 50% the book assumes for dense bf16 training on TPUs, and [Section 13](../moe) told you why: the cross-node expert AllToAll.)
 
 <p markdown=1 class="takeaway">**Takeaway:** fp8 training uses E4M3 everywhere with per-1x128 activation scales and per-128x128 weight scales, fp32 accumulation every 128 elements, and bf16 or fp32 for everything that is not a linear layer. It doubles the FLOPs ceiling, so every roofline whose byte term did not also halve becomes 2x harder to satisfy. DeepSeek-V3's fp8 utilization was about 17%.</p>
 
@@ -325,15 +325,15 @@ Expert matrices: `60 * (384 + 1) * 3 = 69,300`, each costing `5 * (4 * 7168 * 20
 
 {% enddetails %}
 
-**Question 3 [what fp8 does to the book's constants]:** [Section 5](https://jax-ml.github.io/scaling-book/training) says FSDP on TPU v5p is compute-bound above 850 tokens per chip with three axes, and tensor parallelism is compute-bound below $Y = 3F / 2550$. Redo both for fp8 matmuls on TPU7x, (a) if weights and activations are gathered in bf16 and (b) if they are gathered in fp8.
+**Question 3 [what fp8 does to the book's constants]:** [Section 12](https://jax-ml.github.io/scaling-book/gpus) says FSDP across H100 nodes is compute-bound above 2,475 tokens per GPU and tensor parallelism inside a node is compute-bound below $Y = F W_\text{nvlink} / C$; [Section 5](https://jax-ml.github.io/scaling-book/training) says 850 tokens per chip and $Y = 3F / 2550$ on TPU v5p. Redo both for fp8 matmuls, (a) on H100 nodes and on a GB200 NVL72, if weights and activations are gathered in bf16, (b) the same if they are gathered in fp8, and (c) on TPU7x.
 
 {% details Click here for the answer. %}
 
-TPU7x in fp8 has $C = 4.61e15$, so $\alpha = C / W_\text{ici} = 4.61e15 / 1.8e11 = 25{,}600$ per axis.
+(a) On an H100 with fp8 matmuls $C = 1.98e15$, so the cross-node FSDP threshold is `1.98e15 / 400e9 = 4,950` tokens per GPU (twice the book's 2,475) and TP is compute-bound below `Y = 28672 * 450e9 / 1.98e15 = 6.5`-way for LLaMA 3-70B's $F = 28672$. Eight-way TP inside the node, the book's default, is now 1.2x communication-bound. On a GB200 NVL72 the NVLink intensity in fp8 is `5e15 / 900e9 = 5,560`, so TP is compute-bound below `28672 / 5560 = 5.2`-way (the two-matmul convention, as in Section 12), and FSDP across racks needs `5e15 / 3.6e12 = 1,390` tokens per GPU.
 
-(a) Gathering bf16 tensors: FSDP needs `25600 / 3 = 8,500` tokens per chip (ten times v5p's 850), and TP is compute-bound below `Y = 3F / 25600`, which for LLaMA 3-70B's $F = 28672$ is 3.4-way. Two-way tensor parallelism, at most.
+(b) Gathering fp8 tensors halves the bytes, so every threshold halves: 2,475 tokens per GPU and 13-way TP on H100, 10-way TP and 694 tokens per GPU on GB200. Sending activations in fp8 is what keeps 8-way TP alive in the fp8 era, and Nemotron 3 Ultra in the table above runs exactly that, TP8 inside its NVLink domain.
 
-(b) Gathering fp8 tensors halves the bytes, so both thresholds halve: 4,300 tokens per chip and 6.7-way TP. Still five times tighter than v5p in bf16. This is why tensor parallelism on a 2026 TPU is two- or four-way at most and the recipe is EP plus pipeline plus a very large batch. On GPUs, where NVLink grew with the chip and $\alpha$ stayed near 2,500, eight-way TP survives: Nemotron 3 Ultra in the table above uses it inside its NVLink domain.
+(c) TPU7x in fp8 has $\alpha = 4.61e15 / 1.8e11 = 25{,}600$ per axis. Gathering bf16 tensors, FSDP needs `25600 / 3 = 8,500` tokens per chip (ten times v5p's 850) and TP is compute-bound below `Y = 3 * 28672 / 25600 = 3.4`-way: two-way, at most. With fp8 gathers, 4,300 tokens per chip and 6.7-way TP, still five times tighter than v5p in bf16. This is why tensor parallelism on a 2026 TPU is two- or four-way and the recipe is EP plus pipeline plus a very large batch, while on GPUs, where NVLink grew with the chip and $\alpha$ stayed near 2,500, eight-way TP survives.
 
 {% enddetails %}
 
