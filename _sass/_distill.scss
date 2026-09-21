@@ -309,16 +309,14 @@ mjx-container {
   // (Safari/WebKit doesn't auto-apply the scroll-container minimum, so without
   // this the table's content width blows out the text column and the page
   // content gets clipped). max-width caps it at the column so overflow scrolls.
-  d-article table {
-    display: block;
-    width: auto;
-    min-width: 0;
-    max-width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+  // Keep navbar expanded on small screens, but let the long brand title truncate
+  .navbar-brand {
+    max-width: calc(100% - 96px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  // Keep navbar expanded on small screens
   .navbar-toggler {
     display: none !important;
   }
@@ -689,5 +687,23 @@ d-article.has-sidenotes {
     input[type="checkbox"] {
       margin: 0;
     }
+  }
+}
+
+
+// Wide tables (the hardware table has eleven columns) scroll inside their own
+// container at every width rather than overflowing the Distill text column.
+d-article table {
+  display: block;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 768px) {
+  distill-appendix h3 {
+    grid-column: text;
   }
 }

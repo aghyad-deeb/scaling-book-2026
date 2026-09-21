@@ -72,7 +72,7 @@ print("=" * 90)
 print("FP4 rooflines on 2026 chips (dense FLOPs)")
 print("=" * 90)
 chips = [("GB200 NVL72", 2.5e15, 5e15, 10e15, 8e12, 900e9), ("GB300 NVL72", 2.5e15, 5e15, 15e15, 8e12, 900e9),
-         ("Rubin NVL72", 4e15, 17.5e15, 35e15, 19.2e12, 1.5e12), ("MI455X Helios", 5e15, 20.1e15, 40.3e15, 21.5e12, 1.8e12), ("TPU7x", 2.3e15, 4.61e15, None, 7.4e12, 5.4e11)]
+         ("Rubin NVL72", 4e15, 17.5e15, 35e15, 19.2e12, 1.5e12), ("MI455X Helios", 5e15, 20.1e15, 40.3e15, 23.3e12, 1.8e12), ("TPU7x", 2.3e15, 4.61e15, None, 7.4e12, 5.4e11)]
 for name, bf16, fp8, fp4, hbm, egress in chips:
     parts = [f"{name:<14} a_hbm bf16 {bf16 / hbm:5.0f} fp8 {fp8 / hbm:5.0f}" + (f" fp4 {fp4 / hbm:5.0f}" if fp4 else "        ")]
     parts.append(f" | a_net bf16 {bf16 / egress:6.0f} fp8 {fp8 / egress:6.0f}" + (f" fp4 {fp4 / egress:6.0f}" if fp4 else ""))
@@ -144,3 +144,17 @@ for mfu in (0.3, 0.4, 0.5):
 print(f"  batch 94.4M tokens / 9216 chips = {94.4e6 / 9216:,.0f} tokens/chip; FSDP needs (E/(kZ)) x alpha/3: Z=64, fp8 FLOPs -> {(384 / 6) / 64 * 25600 / 3:,.0f} (bf16 gather) / {(384 / 6) / 64 * 12800 / 3:,.0f} (fp8 gather)")
 print(f"  DeepSeek-V3 for comparison on 8960 v5p: {3.29e24 / (8960 * 9.18e14 * 0.4) / 86400:.0f} days at 40% int8/fp8 MFU; they took 2.664M GPU-h / 2048 = {2.664e6 / 2048 / 24:.0f} days on 2048 H800")
 print(f"  RL budget at 10% of pretraining = {0.1 * F:.2g} FLOPs; each generated token costs 2N (generate) + 6N (train) = 8N -> {0.1 * F / (8 * 49e9) / 1e12:.1f}T generated tokens = {0.1 * F / (8 * 49e9) / 33e12 * 100:.0f}% of the corpus; at 1e4 tok/s/chip: {0.1 * F / (8 * 49e9) / (1e4 * 9216) / 3600:.1f} hours")
+
+
+print()
+print("=" * 90)
+print("Section 16 cost anchors and Section 15 worked problems")
+print("=" * 90)
+for rate in (8.0, 10.5, 16.0):
+    print(f"  GB200 at ${rate:.2f}/GPU-h, 13,386 tok/s/GPU -> ${rate / (13386 * 3600) * 1e6:.2f} per million output tokens (H800 at $2 and 1,850 tok/s/GPU: ${2 / (1850 * 3600) * 1e6:.2f})")
+print(f"  markups: R1 $2.19 / $0.22 = {2.19 / 0.22:.0f}x; V4-Pro $3.96 / $0.22 = {3.96 / 0.22:.0f}x; DeepSeek on H800 $2.19 / $0.30 = {2.19 / 0.30:.0f}x")
+print(f"  Q1: 2.2e23 useful FLOPs / 1.28e24 = {2.2e23 / 1.28e24:.0%}; with MTP 4% + attention 14%: {2.2e23 * 1.18 / 1.28e24:.0%}")
+print(f"  Q2: expert matrices 60 x 385 x 3 = {60 * 385 * 3:,}; Muon NS FLOPs per step {60 * 385 * 3 * 5 * (4 * 7168 * 2048 ** 2 + 2 * 2048 ** 3):.2g}; AdamW state 8 B x 1.04T = {8 * 1.04e12 / 1e12:.1f} TB, Muon 4 B = {4 * 1.04e12 / 1e12:.1f} TB; saving over 256 GPUs {4 * 1.04e12 / 256 / 1e9:.0f} GB/GPU")
+print(f"  Q3: H100 fp8 FSDP {1.98e15 / 400e9:,.0f}; TP {28672 * 450e9 / 1.98e15:.1f}-way; GB200 fp8 NVLink alpha {5e15 / 900e9:,.0f} -> TP {28672 / (5e15 / 900e9):.1f}-way; rack FSDP {5e15 / 3.6e12:,.0f}; TPU7x {25600 / 3:,.0f} / {12800 / 3:,.0f}, TP {3 * 28672 / 25600:.1f} / {3 * 28672 / 12800:.1f}")
+print(f"  Q4: B_crit H200 fp8 x E/k x 0.5 = {32 * 1.98e15 / 4.8e12 * 0.5:,.0f}; step slowdown 2.44 / 1.6 = {2.44 / 1.6:.1f}x")
+print(f"  Q5: 512 x 16 x 12k = {512 * 16 * 12e3 / 1e6:.0f}M tokens; KV {512 * 16 * 12e3 * 35e3 / 1e12:.1f} TB; 64k response at 20 tok/s = {65536 / 20:,.0f} s")

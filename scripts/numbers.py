@@ -386,7 +386,55 @@ def report():
     print(f"DeepSeek-V3 had 62.9e6 / 2048 = {62.9e6 / 2048:,.0f} tokens per GPU; decode EP144 at 88 seq/GPU: {144 * 88 * 8 / 288:,.0f} tokens per expert copy per step")
     print(f"gather layout max Z for DeepSeek-V3 (kF=16384): H100 NVLink {gather_layout_max_Z_gpu(H100, 8, 2048):.0f}, H100 IB {gather_layout_max_Z_gpu(H100, 8, 2048, True):.1f}")
 
+def weights_footprint_report():
+    """Section 13's weights-per-GPU table, seeded with the shipped checkpoint sizes (MXFP4 = 4.25 bits/param plus
+    bf16/fp8 non-expert weights), and the fast-domain comparison."""
+    import math
+    print("=" * 78)
+    print("WEIGHTS: accelerators needed just to hold the weights (ceil of bytes / HBM)")
+    print("=" * 78)
+    models = [("DeepSeek-V3 fp8", 671e9), ("Kimi K2 fp8", 1.03e12), ("DeepSeek-V4-Pro MXFP4 experts (shipped)", 864.7e9),
+              ("Kimi K3 MXFP4 experts (shipped)", 1.561e12), ("Kimi K3 fp8", 2.78e12), ("Qwen3.8-2.4T fp8", 2.4e12)]
+    hbms = [("H800/H100", 80e9), ("H200", 141e9), ("B200", 180e9), ("GB200", 186e9), ("TPU7x", 192e9), ("v6e", 32e9), ("v5e", 16e9)]
+    for name, w in models:
+        print(f"{name:<42} " + "  ".join(f"{h}: {math.ceil(w / c):>3}" for h, c in hbms))
+    for dom, cap in [("8 x H800 node", 8 * 80e9), ("8 x H200 node", 8 * 141e9), ("8 x B200 node", 8 * 180e9), ("8 x GB300 node", 8 * 288e9), ("GB200 NVL72 rack", 72 * 186e9), ("TPU7x 4x4x4 cube", 64 * 192e9)]:
+        fits = [n for n, w in models if w < cap]
+        print(f"  {dom:<18} {cap / 1e12:5.2f} TB holds: {', '.join(fits) if fits else 'nothing'}")
+    print("  idealized 0.5 B/param would give K3 1.42 TB and V4-Pro 0.83 TB; MXFP4 scales + bf16/fp8 non-expert weights bring the shipped sizes to 1.56 / 0.87 TB")
+
+
+def worked_problems_report():
+    print("=" * 78)
+    print("SECTION 13 WORKED PROBLEMS")
+    print("=" * 78)
+    # Q3: Qwen3-235B (E=128, k=8, F=1536) on 32 HGX B200 nodes
+    a = B200.c_bf16 / B200.ici_bidi
+    print(f"  Q3(a) HGX B200 NVLink alpha {a:,.0f}; min F fp8 dispatch {a / 2:,.0f} (1,536 clears); IB alpha {B200.c_bf16 / B200.node_egress:,.0f} -> min F {B200.c_bf16 / B200.node_egress / 2:,.0f}; gather layout Z < {gather_layout_max_Z_gpu(B200, 8, 1536):.1f}")
+    print(f"  Q3(b) FSDP: E/(kZ) = {128 / 64:.0f} x C/W_node {fsdp_critical_tokens_gpu(B200):,.0f} = {fsdp_critical_tokens_gpu(B200, 128, 8, 8):,.0f} tokens/GPU -> {256 * fsdp_critical_tokens_gpu(B200, 128, 8, 8) / 1e6:.1f}M batch on 256 GPUs")
+    print(f"  Q3(c) v6e: A < 8 x 1536 / 5110 = {8 * 1536 / 5110:.1f}; 2x2 no wraparound needs F > {2 * 5110 / 8 * 2:,.0f}; pure FSDP 16 x 5110/2 = {16 * 5110 / 2:,.0f} tokens/chip -> {256 * 16 * 5110 / 2 / 1e6:.1f}M batch")
+    # Q5: Kimi K3 on 128 GB200 racks
+    c8 = GB200.c_fp8; wrack = GB200.collective_bw_cross_node
+    print(f"  Q5(a) 60M / 9216 = {60e6 / 9216:,.0f} tokens/GPU; C/W_rack fp8 = {c8 / wrack:,.0f}; pure FSDP {56 * c8 / wrack:,.0f}")
+    print(f"  Q5(b) Z > {56 * c8 / wrack / (60e6 / 9216):.0f}; Z=64 threshold {56 / 64 * c8 / wrack:,.0f}; in-rack AllToAll min F {c8 / GB200.ici_bidi / 2:,.0f} vs 3,072 -> {3072 / (c8 / GB200.ici_bidi / 2):.2f}x")
+    print(f"  Q5(d) TPU7x: pure FSDP 56 x 4270 = {56 * 4270:,}; Z=64 {56 / 64 * 4270:,.0f}; AllToAll min F 4 x 12800/8 = {4 * 12800 / 8:,.0f} -> {6400 / 3072:.1f}x bound; step {0.53 + 0.47 * 2.1:.2f}x -> {1 / (0.53 + 0.47 * 2.1):.0%} of peak")
+    # Q6: DeepSeek-V3 on 2048 H800
+    print(f"  Q6 DP weight traffic with EP64 PP16 at fp8 peak: {fsdp_critical_tokens_gpu(H800, 256, 8, 64, 16, True):,.0f} tokens/GPU vs 30,700; in-node F > {H800.c_fp8 / H800.ici_bidi / 2:,.0f} (spec) / {H800.c_fp8 / H800.measured_egress / 2:,.0f} (measured); cross-node F > {H800.c_fp8 / H800.node_egress / 2:,.0f} -> {H800.c_fp8 / H800.node_egress / 2 / 2048:.1f}x short; v5p Z=64 FSDP {32 / 64 * 850:,.0f} vs {63e6 / 8960:,.0f}")
+    print(f"  Q7 training rows per expert: {30700 * 8 / 4:,.0f} (H800), {7000 * 8 / 4:,.0f} (v5p); decode {144 * 88 * 8 / 288:,.0f}")
+
+
+def ep_tpu_fp8_report():
+    print("=" * 78)
+    print("EXPERT PARALLELISM on TPUs with fp8 dispatch + bf16 combine (b_d + b_c = 3), bf16 matmuls; double for fp8 matmuls; double again with no wraparound")
+    print("=" * 78)
+    for c in TPUS:
+        print(f"{c.name:<18} " + "  ".join(f"A={A}: F>{ep_critical_expert_width(c, A, 1, 2):,.0f}" for A in (2, 4, 8, 16)))
+
+
 if __name__ == "__main__":
+    weights_footprint_report()
+    worked_problems_report()
+    ep_tpu_fp8_report()
     report()
 
 

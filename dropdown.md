@@ -4,9 +4,10 @@ title: Sections
 nav: true
 nav_order: 8
 dropdown: true
+sitemap: false
 children:
   - title: The 2026 Update. Outline
-    permalink: /index
+    permalink: /
   - title: Part 13. Mixture of Experts
     permalink: /moe
   - title: Part 14. The KV Cache

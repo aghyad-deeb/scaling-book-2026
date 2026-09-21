@@ -84,7 +84,7 @@ def main():
     print("=" * 100)
     print("MLA DECODE (absorbed): FLOPs and bytes per token per layer per context token")
     print("=" * 100)
-    for name, N, dc, dr in [("DeepSeek-V3 / V3.2", 128, 512, 64), ("Kimi K2 / GLM-5 / Mistral L3", 64, 512, 64), ("Kimi K3 MLA layers", 96, 512, 64)]:
+    for name, N, dc, dr in [("DeepSeek-V3 / V3.2", 128, 512, 64), ("Kimi K2 / GLM-5", 64, 512, 64), ("Kimi K3 MLA layers", 96, 512, 64)]:
         flops = 2 * N * ((dc + dr) + dc)
         byts = dc + dr
         print(f"{name:<32} FLOPs/ctx-token = {flops:>8,}   bytes/ctx-token (fp8) = {byts}   intensity fp8 {flops / byts:5.0f}  bf16 {flops / (2 * byts):5.0f}")
@@ -150,7 +150,7 @@ def main():
     print("SEQUENCES PER GPU AT 128k CONTEXT, after weights are spread over the group")
     print("=" * 100)
     models = [("DeepSeek-V3 fp8 (MLA)", 671e9, lambda S: mla(S, 61)), ("DeepSeek-V3.2 fp8 (stored incl. indexer)", 685e9, lambda S: 61 * 704 * S),
-              ("Kimi K3 fp4 experts", 1.42e12, lambda S: 24 * 576 * S + 69 * 96 * 128 * 128 * 2), ("Qwen3.8 fp8", 2.4e12, lambda S: 23 * 2048 * S + 69 * 128 ** 3 * 4),
+              ("Kimi K3 fp4 experts (shipped)", 1.561e12, lambda S: 24 * 576 * S + 69 * 96 * 128 * 128 * 2), ("Qwen3.8 fp8", 2.4e12, lambda S: 23 * 2048 * S + 69 * 128 ** 3 * 4),
               ("LLaMA 3 405B int8 (GQA)", 405e9, lambda S: gqa(S, 126, 8, 128))]
     for hw, hbm, group in [("GB200 NVL72, 64 GPUs of the rack", 186e9, 64), ("TPU7x 4x4x4 cube", 192e9, 64), ("H200 node group, 144 GPUs (DeepSeek EP144)", 141e9, 144), ("H800, 144 GPUs (DeepSeek EP144, ~22GB weights incl. replicated attention)", 80e9, 144)]:
         print(f"-- {hw}")

@@ -129,7 +129,7 @@ def fig_total_vs_active():
         ("Qwen3.8-2.4T", 2.4e12, 95e9, 2026, -8, -6, "end"),
         ("Kimi K3", 2.8e12, 104e9, 2026, 7, 12, "start"),
         ("Gemma 4 31B", 31e9, 31e9, 2026, 7, 12, "start"),
-        ("Qwen3.6-27B", 27e9, 27e9, 2026, -8, -4, "end"),
+        ("Qwen3.6-27B", 27e9, 27e9, 2026, 8, -4, "start"),
     ]
     for name, tot, act, yr, dx, dy, anc in pts:
         c.point(tot, act, Y[yr], name, dx, dy, anchor=anc)
@@ -295,11 +295,14 @@ def fig_decode_breakdown():
     p.append(f"<line x1='{x0}' y1='{y}' x2='{x1}' y2='{y}' stroke='#888'/>")
     p.append(f"<text x='{(x0 + x1) / 2:.1f}' y='{y + 40}' text-anchor='middle' font-size='12.5' fill='#222' {FONT}>milliseconds per decode step (DeepSeek-V3, H800, 88 sequences per GPU at 4,989 tokens, EP144)</text>")
     p.append(f"<text x='20' y='30' font-size='14' font-weight='bold' fill='#222' {FONT}>Where DeepSeek's production decode step goes</text>")
-    lx = 210
-    for lab, col in [("weights", "#9e9e9e"), ("KV cache", "#6baed6"), ("MoE FLOPs", "#31a354"), ("attention FLOPs", "#3182bd"), ("dispatch, 5MB fp8 at 40GB/s", "#e6550d"), ("combine, 10MB bf16", "#fd8d3c")]:
-        p.append(f"<rect x='{lx}' y='{H - 22}' width='11' height='11' fill='{col}'/>")
-        p.append(f"<text x='{lx + 15}' y='{H - 13}' font-size='11' fill='#333' {FONT}>{lab}</text>")
-        lx += 16 + 7 * len(lab) + 14
+    items = [("weights", "#9e9e9e"), ("KV cache", "#6baed6"), ("MoE FLOPs", "#31a354"), ("attention FLOPs", "#3182bd"), ("dispatch, 5MB fp8 at 40GB/s", "#e6550d"), ("combine, 10MB bf16", "#fd8d3c")]
+    for row in (0, 1):
+        lx = 210
+        for lab, col in items[3 * row:3 * row + 3]:
+            yy = H - 40 + 18 * row
+            p.append(f"<rect x='{lx}' y='{yy}' width='11' height='11' fill='{col}'/>")
+            p.append(f"<text x='{lx + 15}' y='{yy + 9}' font-size='11' fill='#333' {FONT}>{lab}</text>")
+            lx += 16 + 7 * len(lab) + 24
     p.append("</svg>")
     with open(os.path.join(OUT, "decode-step-breakdown.svg"), "w") as f:
         f.write("".join(p))
@@ -373,7 +376,7 @@ def fig_chip_intensity():
         ("B200", 2.25e15, 4.5e15, 9e15, 8e12, 9e11),
         ("GB300", 2.5e15, 5e15, 15e15, 8e12, 9e11),
         ("Rubin", 4e15, 17.5e15, 35e15, 19.2e12, 1.5e12),
-        ("MI455X", 5e15, 20.1e15, 40.3e15, 21.5e12, 1.8e12),
+        ("MI455X", 5e15, 20.1e15, 40.3e15, 23.3e12, 1.8e12),
         ("TPU7x", 2.3e15, 4.61e15, None, 7.4e12, 5.4e11),
         ("TPU v5p", 0.46e15, 0.92e15, None, 2.8e12, 5.4e11),
         ("TPU v6e", 0.92e15, 1.84e15, None, 1.6e12, 3.6e11),
@@ -388,8 +391,9 @@ def fig_chip_intensity():
         p.append(f"<line x1='{x0}' y1='{yy:.1f}' x2='{x1}' y2='{yy:.1f}' stroke='#e6e6e6'/>")
         p.append(f"<text x='{x0 - 8}' y='{yy + 4:.1f}' text-anchor='end' font-size='11.5' fill='#444' {FONT}>{v}</text>")
     p.append(f"<line x1='{x0}' y1='{y1 - 240 / ymax * (y1 - y0):.1f}' x2='{x1}' y2='{y1 - 240 / ymax * (y1 - y0):.1f}' stroke='#b509ac' stroke-dasharray='5,4'/>")
-    p.append(f"<line x1='{x0 + 10}' y1='{y0 + 34}' x2='{x0 + 42}' y2='{y0 + 34}' stroke='#b509ac' stroke-dasharray='5,4'/>")
-    p.append(f"<text x='{x0 + 48}' y='{y0 + 38}' font-size='12' fill='#b509ac' {FONT}>240 to 300, the book's bf16 critical batch on TPU v5e and H100</text>")
+    legend_line = (f"<rect x='{x0 + 6}' y='{y0 + 24}' width='300' height='20' fill='white' fill-opacity='0.9'/>"
+                   f"<line x1='{x0 + 10}' y1='{y0 + 34}' x2='{x0 + 42}' y2='{y0 + 34}' stroke='#b509ac' stroke-dasharray='5,4'/>"
+                   f"<text x='{x0 + 48}' y='{y0 + 38}' font-size='12' fill='#b509ac' {FONT}>240 to 300, the book's bf16 critical batch</text>")
     gw = (x1 - x0) / len(chips)
     colors = {"bf16": "#9e9e9e", "fp8": "#3182bd", "fp4": "#b509ac"}
     for i, (name, bf, f8, f4, hbm, net) in enumerate(chips):
@@ -411,6 +415,7 @@ def fig_chip_intensity():
         lx += 70
     p.append(f"<text x='390' y='{y1 + 48}' text-anchor='middle' font-size='11.5' fill='#444' {FONT}>The bf16 bars barely move across four hardware generations; the fp4 bars are where the new compute went. TPUs publish no fp4 rate.</text>")
     p.append(f"<text x='390' y='{y1 + 66}' text-anchor='middle' font-size='11.5' fill='#444' {FONT}>Every decode batch-size threshold in Section 7 scales with the height of the bar for the precision you compute in.</text>")
+    p.append(legend_line)
     p.append("</svg>")
     with open(os.path.join(OUT, "chip-intensity.svg"), "w") as f:
         f.write("".join(p))
@@ -432,7 +437,7 @@ def fig_hero():
     # ---- panel 1: an 8-GPU H800 node (2024 serving: DeepSeek-V3 on 18 of these) ----
     x0, y0 = 40, 60
     label(x0 + 110, 40, "8 x H800 node", 14, True)
-    label(x0 + 110, 56, "80GB each, NVLink 400GB/s, one 400Gb/s NIC per GPU", 10, color="#666")
+    label(x0 + 110, 56, "80GB each, NVLink 200GB/s each way (160 measured), one 400Gb/s NIC per GPU", 10, color="#666")
     for i in range(8):
         tile(x0 + i * 27, y0 + 30, 22, 60, "#dbe9f6")
     tile(x0 - 4, y0 + 100, 8 * 27 + 4, 10, "#9ecae1")
@@ -456,7 +461,7 @@ def fig_hero():
     # ---- panel 3: TPU7x 4x4x4 cube (one of 144 in a pod) ----
     x2, y2 = 660, y0 + 30
     label(x2 + 100, 40, "TPU7x 4x4x4 cube", 14, True)
-    label(x2 + 100, 56, "64 chips, 192GB each, 3D torus ICI at 180GB/s per axis", 10, color="#666")
+    label(x2 + 100, 56, "64 chips, 192GB each, 3D torus ICI, 90GB/s one way per link, six links", 10, color="#666")
     s_ = 30
     for k in range(4):           # depth layers drawn back to front
         off = (3 - k) * 9

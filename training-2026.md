@@ -20,7 +20,7 @@ previous_section_url: "../attention"
 previous_section_name: "Part 14: KV Cache"
 
 next_section_url: ../applied-frontier
-next_section_name: "Part 16: DeepSeek"
+next_section_name: "Part 16: Serving and Training DeepSeek"
 
 giscus_comments: false
 
@@ -68,16 +68,16 @@ The labs disclose the following about how they train. Blank cells are things the
 
 | Model | Tokens | Batch | Seq. length | Matmul precision | Optimizer | Parallelism | Cluster |
 | :---- | -----: | ----: | ----------: | :--------------- | :-------- | :---------- | :------ |
-| LLaMA 3 405B<d-cite key="llama3"></d-cite> | 15T | 16M | 8k | bf16 | AdamW | TP8, CP16, PP16, DP | 16k H100 |
+| LLaMA 3 405B<d-cite key="llama3"></d-cite> | 15T | 16M | 8k | bf16 | AdamW | TP8, PP16, DP (CP16 added at 128k) | 16k H100 |
 | DeepSeek-V3<d-cite key="DeepSeek3"></d-cite> | 14.8T | 63M | 4k | fp8 | AdamW | EP64, PP16, DP2 | 2,048 H800 |
 | Kimi K2<d-cite key="kimik2"></d-cite> | 15.5T | 67M | 4k | bf16 (fp8 storage) | MuonClip | EP16, PP16, ZeRO-1 | H800 |
 | GLM-4.5<d-cite key="glm45"></d-cite> | 23T | 16M to 64M | 4k | | Muon | | |
 | GLM-5<d-cite key="glm5"></d-cite> | 28.5T | | 4k | | Muon | | |
-| Nemotron 3 Ultra<d-cite key="nemotron3ultra"></d-cite> | 20T | | 4k | NVFP4 | | CP32, TP8, EP128, PP2 | GB200 |
+| Nemotron 3 Ultra<d-cite key="nemotron3ultra"></d-cite> | 20T | 25M | 8k | NVFP4 | AdamW | CP32, TP8, EP128, PP2 (1M phase; main-phase layout not disclosed) | GB200 (stated for the 1M phase) |
 | DeepSeek-V4-Pro<d-cite key="deepseekv4"></d-cite> | 33T | 94M | 4k to 1M | fp8 | Muon + AdamW | | |
 | Kimi K3<d-cite key="kimik3"></d-cite> | | | 8k to 64k | fp8 activations | Per-head Muon | PP, EP, ZeRO-1, CP | |
 
-Three things to notice before we get into the details. Batch sizes are four to six times larger than LLaMA 3's, which as [Section 5](https://jax-ml.github.io/scaling-book/training) explained is what lets you spread a run over more chips while staying compute-bound. Of the labs that say, only Kimi K2 kept bf16 matmuls, and only DeepSeek-V3 and Nemotron 3 Nano kept Adam. And the labs have become much less forthcoming about clusters and costs than they were in 2024: DeepSeek-V3 is still the only frontier open pretraining run with a published per-token GPU-hour figure and cost breakdown (2.79M H800-hours; Llama 4 and gpt-oss give totals of 7.38M and 2.1M H100-hours with no breakdown).
+EP, TP, PP, CP and DP are expert, tensor, pipeline, context and data parallelism ([Sections 5](https://jax-ml.github.io/scaling-book/training) and [13](../moe)); ZeRO-1 shards the optimizer state across data parallelism<d-cite key="zero"></d-cite>. Three things to notice before we get into the details. Batch sizes at the Chinese labs are four to six times LLaMA 3's (Nemotron 3's 25M is 1.6x), which as [Section 5](https://jax-ml.github.io/scaling-book/training) explained is what lets you spread a run over more GPUs while staying compute-bound. Of the 2025 and 2026 rows that say, only Kimi K2 kept bf16 matmuls and only DeepSeek-V3 kept Adam (as did Nemotron 3 Nano, which is too small for the table). And the labs have become much less forthcoming about clusters and costs than they were in 2024: DeepSeek-V3 is still the only frontier open pretraining run with a published per-token GPU-hour figure and cost breakdown (2.79M H800-hours; Llama 4 gives 5.0M and 2.38M H100-hours for Scout and Maverick and gpt-oss 2.1M, with no per-token or per-stage breakdown).
 
 ## Low Precision: fp8 Everywhere, fp4 Arriving
 
@@ -100,15 +100,15 @@ Every roofline in this book is a ratio of FLOPs to bytes. fp8 doubles $C$ and ha
 | Roofline | Bytes in the denominator | Halved by fp8? | Threshold |
 | :------- | :----------------------- | :------------: | :-------- |
 | Decode, weight loading ([Section 7](https://jax-ml.github.io/scaling-book/inference)) | weights | yes if weights are fp8 | unchanged |
-| Tensor parallelism ([Section 5](https://jax-ml.github.io/scaling-book/training)) | activations moved over ICI | yes if activations are sent in fp8 | unchanged |
-| FSDP weight gathers | weights moved over ICI | only if you gather the fp8 copy | doubles otherwise |
+| Tensor parallelism ([Section 5](https://jax-ml.github.io/scaling-book/training)) | activations moved over NVLink (ICI on a TPU) | yes if activations are sent in fp8 | unchanged |
+| FSDP weight gathers | weights moved over InfiniBand or NVLink (ICI on a TPU) | only if you gather the fp8 copy | doubles otherwise |
 | Expert-parallel AllToAll ([Section 13](../moe)) | dispatched tokens | dispatch yes, combine no | 1.5x tighter (bytes fall to 3/4, FLOPs double) |
 | Attention ([Section 14](../attention)) | KV cache | yes if KV is fp8 | unchanged |
-| Anything measured against HBM bandwidth with bf16 tensors | | no | doubles |
+| Anything measured against HBM bandwidth with bf16 tensors | bf16 weights or activations read from HBM | no | doubles |
 
-For a concrete example, take the H800 DeepSeek trained on. Its NVLink operational intensity goes from `990e12 / 200e9 = 4,950` in bf16 to 9,900 in fp8, its InfiniBand intensity from `990e12 / 50e9 = 19,800` to 39,600, and its HBM intensity from `990e12 / 3.35e12 = 296` to 591. On a GB200 the NVLink number goes from 2,780 to 5,560 and the HBM number from 312 to 625; on TPU7x the per-axis ICI intensity goes from 12,800 to 25,600. The GPU didn't change; the FLOPs ceiling did. If you run fp8 matmuls but keep bf16 activations in HBM, every "am I compute-bound" question in this book gets harder by 2x. So fp8 is a free 2x on the FLOPs and on nothing else; each roofline improves only where its bytes come down too.
+For a concrete example, take the H800 DeepSeek trained on. Its NVLink operational intensity goes from `990e12 / 200e9 = 4,950` in bf16 (6,190 at the 160GB/s DeepSeek actually achieves) to 9,900 (12,400) in fp8, its InfiniBand intensity from `990e12 / 50e9 = 19,800` to 39,600, and its HBM intensity from `990e12 / 3.35e12 = 296` to 591. On a GB200 the NVLink number goes from 2,780 to 5,560 and the HBM number from 312 to 625; on TPU7x the per-axis ICI intensity goes from 12,800 to 25,600. The links didn't change; the FLOPs ceiling did.
 
-Let's also redo the utilization estimate from Question 7 of [Section 4](https://jax-ml.github.io/scaling-book/transformers) with better numbers. DeepSeek-V3 spent 2,664K H800-hours on 14.8T tokens at 37B active parameters, or `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs. An H800 has the same tensor cores as an H100, 1.98e15 dense fp8 FLOPs/s, so the utilization was `3.3e24 / (2.664e6 * 3600 * 1.98e15) = 17%`. DeepSeek's later hardware paper gives the steady-state figure directly: 385 TFLOP/s per GPU counting attention FLOPs, which they report as 39% of *bf16* peak and which is 19% of the fp8 peak the matmuls actually ran at.<d-cite key="deepseek_isca"></d-cite> (Section 4 used 1.51e15, which is the PCIe H800's rate, and got 22%. Either way it is well under the 40 to 50% the book assumes for dense bf16 training on TPUs, and [Section 13](../moe) told you why: the cross-node expert AllToAll.)
+Let's also redo the utilization estimate from Question 7 of [Section 4](https://jax-ml.github.io/scaling-book/transformers) with better numbers. DeepSeek-V3 spent 2,664K H800-hours on 14.8T tokens at 37B active parameters, or `6 * 37e9 * 14.8e12 = 3.3e24` FLOPs. An H800 has the same tensor cores as an H100, 1.98e15 dense fp8 FLOPs/s, so the utilization was `3.3e24 / (2.664e6 * 3600 * 1.98e15) = 17%`. DeepSeek's later hardware paper gives the steady-state figure directly: 385 TFLOP/s per GPU counting attention FLOPs, which they report as 39% of *bf16* peak and which is 19.5% of the fp8 peak the matmuls actually ran at.<d-cite key="deepseek_isca"></d-cite> (Section 4 used 1.51e15, which is the PCIe H800's rate, and got 22%. Either way it is well under the 40 to 50% the book assumes for dense bf16 training on TPUs, and [Section 13](../moe) told you why: the cross-node expert AllToAll.)
 
 <p markdown=1 class="takeaway">**Takeaway:** fp8 training uses E4M3 everywhere with per-1x128 activation scales and per-128x128 weight scales, fp32 accumulation every 128 elements, and bf16 or fp32 for everything that is not a linear layer. It doubles the FLOPs ceiling, so every roofline whose byte term did not also halve becomes 2x harder to satisfy. DeepSeek-V3's fp8 utilization was about 17%.</p>
 
@@ -132,29 +132,28 @@ What does fp4 do to the rooflines? The same thing fp8 did, again. On a GB300, fp
 | :------------------- | ---: | --: | --: |
 | Dense FLOPs/s | 2.5e15 | 5e15 | 15e15 |
 | HBM intensity $C / W_\text{hbm}$ | 312 | 625 | 1,875 |
-| NVLink intensity $C / W_\text{egress}$ | 2,800 | 5,600 | 16,700 |
-| Minimum expert width for compute-bound EP (fp8 dispatch, [Section 13](../moe)) | 1,400 | 2,800 | 8,300 |
+| NVLink intensity $C / W_\text{egress}$ | 2,780 | 5,560 | 16,700 |
+| Minimum expert width for compute-bound EP (fp8 dispatch, [Section 13](../moe)) | 1,390 | 2,780 | 8,330 |
 
-At fp4 compute, the NVL72's NVLink sits where InfiniBand sat for fp8 on the H800: a 2,048-wide expert's AllToAll is four times communication-bound even inside the rack. Rubin (35e15 dense fp4 against 1.5e12 egress) is worse. If fp4 training takes hold, expect experts to get wider, or the AllToAll to be hidden behind attention as [Section 13](../moe) described, or both. Each chip generation since v5p has raised $\alpha$; low precision raises it again without touching a single link.
+At fp4 compute, the NVL72's NVLink sits roughly where InfiniBand sat for bf16 on the H800 (16,700 against 19,800): a 2,048-wide expert's AllToAll is four times communication-bound even inside the rack. Rubin (35e15 dense fp4 against 1.5e12 egress) is worse. If fp4 training takes hold, expect experts to get wider, or the AllToAll to be hidden behind attention as [Section 13](../moe) described, or both. Every hardware generation since the H100 and v5p has raised $\alpha = C / W$, the FLOPs-to-bandwidth ratio of [Section 5](https://jax-ml.github.io/scaling-book/training); low precision raises it again without touching a single link.
 
 ### Quantization-aware training for the weights you ship
 
-What became standard in 2026 is not fp4 pretraining but fp8 pretraining followed by quantization-aware training (QAT): during post-training the expert weights are quantized to four bits *inside the training loop*, so that the model learns to live with the rounding, and those are the weights that ship.
+fp4 pretraining isn't yet the standard. What is: fp8 pretraining followed by quantization-aware training (QAT), where during post-training the expert weights are quantized to four bits *inside the training loop*, so that the model learns to live with the rounding, and those are the weights that ship.
 
 | Model | Shipped expert weights | Method | Result |
 | :---- | :--------------------- | :----- | :----- |
 | Kimi K2 Thinking<d-cite key="kimik2thinking"></d-cite> | int4 (group 32) | QAT in post-training | 594GB vs 1,029GB; about 2x generation speed |
 | GLM-5<d-cite key="glm5"></d-cite> | int4 | QAT in supervised fine-tuning (SFT), bit-identical train and inference kernels | |
-| DeepSeek-V4<d-cite key="deepseekv4"></d-cite> | MXFP4 (plus the sparse-attention indexer) | QAT in post-training; native fp4 in RL rollouts | 865GB vs 1,606GB |
-| Kimi K3<d-cite key="kimik3"></d-cite> | MXFP4 weights, MXFP8 activations | QAT through SFT and RL | 1,561GB for 2.78T parameters |
+| DeepSeek-V4<d-cite key="deepseekv4"></d-cite> | MXFP4 (plus the sparse-attention indexer) | QAT in post-training; native fp4 in RL rollouts | 0.87TB (Pro, fp4 experts) vs 1.6TB (fp8 Base) |
+| Kimi K3<d-cite key="kimik3"></d-cite> | MXFP4 weights, MXFP8 activations | QAT through SFT and RL | 1.56TB for 2.78T parameters |
+| gpt-oss<d-cite key="gptoss"></d-cite> | MXFP4 | post-training quantization (method not published) | about 61GB, fits one 80GB GPU |
 
-The sizes in the last column are the checkpoints as shipped, with attention, shared experts and the vision tower in bf16. With everything but the experts in fp8, which is how Sections 13, 14 and 16 count serving memory, K3 is 1.42TB and V4-Pro 0.83TB.
-
-| gpt-oss<d-cite key="gptoss"></d-cite> | MXFP4 | quantized during post-training | fits an 80GB GPU |
+The sizes in the last column are the checkpoints as shipped: MXFP4 costs 4.25 bits per parameter with its scales, and attention, shared experts and (for K3) the vision tower stay in bf16. Sections 13, 14 and 16 use these shipped sizes when they count serving memory.
 
 DeepSeek's implementation has a neat trick. The fp32 master weights are quantized to MXFP4, then *dequantized to fp8* for the actual matmul. Because E4M3 has two more exponent bits than E2M1, the fp4-to-fp8 conversion is exact, so the existing fp8 training kernels run unmodified and the only new code is the quantizer and a straight-through estimator in the backward pass. The forward pass sees exactly the weights that will be served.
 
-That last point is the systems reason this matters. [Section 13](../moe) showed that four-bit expert weights halve the chips needed to hold a model and double the batch you can fit; that is why it is worth doing. But there is a second reason that appears once you get to reinforcement learning: if the policy's rollouts are generated by an inference engine using the quantized weights while the trainer uses the full-precision ones, the two disagree, and RL with a mismatched sampler is off-policy. Kimi K3's report says QAT was chosen so that "rollout and training share the same quantization scheme", and DeepSeek-V4 runs its RL rollouts on the native fp4 weights for the same reason. (GLM-5's "bitwise-identical" int4 kernel serves a narrower purpose: making its SFT-stage QAT match the shipped weights; its RL rollouts run in fp8.) We come back to this below.
+That last point is the systems reason this matters. [Section 13](../moe) showed that four-bit expert weights halve the GPUs needed to hold a model and double the batch you can fit; that is why it is worth doing. But there is a second reason that appears once you get to reinforcement learning: if the policy's rollouts are generated by an inference engine using the quantized weights while the trainer uses the full-precision ones, the two disagree, and RL with a mismatched sampler is off-policy. Kimi K3's report says QAT was chosen so that "rollout and training share the same quantization scheme", and DeepSeek-V4 runs its RL rollouts on the native fp4 weights for the same reason. (GLM-5's "bitwise-identical" int4 kernel serves a narrower purpose: making its SFT-stage QAT match the shipped weights; its RL rollouts run in fp8.) We come back to this below.
 
 <p markdown=1 class="takeaway">**Takeaway:** fp4 pretraining works (NVFP4, with about 15% of layers kept in higher precision and a loss gap under 1%) but is so far confined to NVIDIA's own models. The common 2026 pattern is fp8 pretraining followed by quantization-aware post-training to 4-bit expert weights, which halves serving memory and, if the RL rollouts also use the 4-bit weights, removes a train-serve mismatch.</p>
 
@@ -162,7 +161,7 @@ That last point is the systems reason this matters. [Section 13](../moe) showed 
 
 ### The update
 
-Adam has been the default optimizer for a decade. In 2025 it lost that position, at least among the labs training open MoEs. Kimi K2, Kimi K3, GLM-4.5 and GLM-5, DeepSeek-V4 and V4.1, and Qwen's experimental Qwen3.8-Next all use Muon<d-cite key="muon"></d-cite><d-cite key="moonlight"></d-cite> for their matrix parameters. DeepSeek-V3, Nemotron 3 Nano and Llama used AdamW; Qwen and the larger Nemotrons don't say.
+Adam has been the default optimizer for a decade. In 2025 it lost that position, at least among the labs training open MoEs. Kimi K2, Kimi K3, GLM-4.5 and GLM-5, DeepSeek-V4 and V4.1, and Qwen's experimental Qwen3.8-Flash-Next all use Muon<d-cite key="muon"></d-cite><d-cite key="moonlight"></d-cite> for their matrix parameters. DeepSeek-V3, Nemotron 3 Nano and Llama used AdamW; Qwen and the larger Nemotrons don't say.
 
 Muon is SGD with momentum plus one extra step. For a weight matrix $W$ with gradient $G$:
 
@@ -170,7 +169,7 @@ $$M_t = \mu M_{t-1} + G_t, \qquad O_t = \text{NewtonSchulz}(M_t) \cdot \sqrt{\ma
 
 The Newton-Schulz step orthogonalizes the momentum matrix: it replaces $M$ with the nearest matrix whose singular values are all one, so every direction in the update gets the same step size regardless of how large its gradient was. It is computed with five iterations of a fixed quintic polynomial in $X X^\top$, entirely in bf16 matmuls.<d-footnote>Newton-Schulz iteration is $X \leftarrow a X + b (X X^\top) X + c (X X^\top)^2 X$ with $(a, b, c) = (3.4445, -4.7750, 2.0315)$, five times, on the momentum matrix scaled to unit norm. DeepSeek-V4 uses a "hybrid" ten iterations, eight with those coefficients and two with $(2, -1.5, 0.5)$ to land exactly on singular value one. The $\sqrt{\max(n, m)} \cdot 0.2$ factor matches the update's root-mean-square to what Adam would produce, so Adam learning rates transfer; DeepSeek uses 0.18.</d-footnote> The claimed benefit is token efficiency: Moonlight's scaling-law fits on sub-2B models found Muon needs about half the training FLOPs of AdamW to reach the same loss, and Kimi K2's 15.5T-token run "with zero loss spikes" is the largest published evidence that it holds up at scale (as evidence of stability, that is; there is no AdamW twin of K2 to compare against). Vectors, biases, norms, embeddings and the output head still use AdamW.
 
-Muon has a stability problem of its own: attention logits explode, more often than with Adam. Where keys are materialized per head, normalizing queries and keys fixes it (GLM-4.5 on grouped-query attention; DeepSeek-V4 normalizes queries and KV entries directly). For MLA the keys are never materialized per head at inference time, so Kimi's answer is QK-Clip: after each step, for any head whose maximum attention logit $\ell_\text{max}$ exceeded a threshold $\tau = 100$, scale that head's query and key projection weights down by $\sqrt{\tau / \ell_\text{max}}$. In K2, 12.7% of heads triggered the clip at some point in the first 70,000 steps, after which none did; the mechanism switches itself off. Kimi K3, GLM-5 and DeepSeek-V4.1 also orthogonalize each attention head's block of the projection matrices separately ("per-head Muon" or "Muon Split"), which GLM reports is enough to keep logits stable with no clipping at all; K3 keeps the clip as well.
+Muon has a stability problem of its own: attention logits explode, more often than with Adam. Where keys are materialized per head, normalizing queries and keys fixes it (GLM-4.5 on grouped-query attention; DeepSeek-V4 normalizes queries and KV entries directly). For MLA (multi-head latent attention, [Section 14](../attention)) the keys are never materialized per head at inference time, so Kimi's answer is QK-Clip: after each step, for any head whose maximum attention logit $\ell_\text{max}$ exceeded a threshold $\tau = 100$, scale that head's compressed query and key projections down by $\sqrt{\tau / \ell_\text{max}}$ and its rotary query projection by $\tau / \ell_\text{max}$ (the shared rotary key is left alone). In K2, 12.7% of heads triggered the clip at some point in the first 70,000 steps, after which none did; the mechanism switches itself off. Kimi K3, GLM-5 and DeepSeek-V4.1 also orthogonalize each attention head's block of the projection matrices separately ("per-head Muon" or "Muon Split"), which GLM reports is enough to keep logits stable with no clipping at all; K3 keeps the clip as well.
 
 ### What it costs
 
@@ -190,7 +189,7 @@ Moonlight's distributed algorithm does a ReduceScatter of the fp32 gradient (4 b
 
 ## Multi-Token Prediction
 
-Nearly every DeepSeek, GLM, Qwen, Nemotron and MiniMax flagship since 2025 trains with a multi-token prediction (MTP) objective<d-cite key="mtp"></d-cite> (Kimi K2 didn't; Qwen added it with Qwen3-Next; DeepSeek-V4.1-Flash dropped it in favor of a drafter trained afterwards): in addition to predicting token $t+1$ from the trunk's representation of token $t$, a small extra module predicts token $t+2$. DeepSeek's version<d-cite key="DeepSeek3"></d-cite> is one additional Transformer block that takes the trunk's final hidden state for position $t$, concatenates the embedding of the (ground-truth) token $t+1$, projects back to $D$, runs the block, and applies the shared output head. Its loss is weighted 0.3 for most of training and 0.1 at the end. Depth one is the DeepSeek, Kimi and GLM-4.5 default; MiniMax, LongCat, MiMo and Nemotron train 2 to 7 modules, and GLM-5 trains three steps with shared parameters so that the module is used at inference the way it was trained.
+Nearly every DeepSeek, GLM, Qwen, Nemotron and MiniMax flagship since 2025 trains with a multi-token prediction (MTP) objective<d-cite key="mtp"></d-cite> (Kimi K2 didn't; Qwen added it with Qwen3-Next; DeepSeek-V4.1-Flash dropped it in favor of a drafter trained afterwards<d-cite key="deepseekv41"></d-cite>): in addition to predicting token $t+1$ from the trunk's representation of token $t$, a small extra module predicts token $t+2$. DeepSeek's version<d-cite key="DeepSeek3"></d-cite> is one additional Transformer block that takes the trunk's final hidden state for position $t$, concatenates the embedding of the (ground-truth) token $t+1$, projects back to $D$, runs the block, and applies the shared output head. Its loss is weighted 0.3 for most of training and 0.1 at the end. Depth one is the DeepSeek, Kimi K3 and GLM-4.5 default; MiniMax, LongCat, MiMo and Nemotron train 2 to 7 modules, and GLM-5 trains three steps with shared parameters so that the module is used at inference the way it was trained.
 
 **Cost in training.** One extra block on a 61-block model is 1.6% more block FLOPs, and the extra pass through the 129,280-wide output head is another 2.5%: **about 4% of forward FLOPs** for DeepSeek-V3, or about 14B parameters in the checkpoint that aren't used for next-token prediction at all. The labs report it improves the main loss, and take the 4%.
 
@@ -198,12 +197,12 @@ Nearly every DeepSeek, GLM, Qwen, Nemotron and MiniMax flagship since 2025 train
 
 | System | Draft tokens per step | Measured acceptance length | Speedup |
 | :----- | --------------------: | -------------------------: | :------ |
-| DeepSeek-V3 paper | 1 | 85 to 90% second-token acceptance | 1.8x tokens/s |
+| DeepSeek-V3 paper | 1 | about 1.85 to 1.9 (85 to 90% second-token acceptance) | 1.8x tokens/s |
 | SGLang, V3 on H200, 2 requests per GPU | 3 / 4 | 2.18 / 2.44 | +60% throughput |
 | SGLang, V3, 128 requests per GPU | 1 | | +14% |
-| GLM-5 vs DeepSeek-V3.2, 4 steps | 4 | 2.76 vs 2.55 | |
-| GLM-5.3, EAGLE-style draft from the MTP head | 6 (5 steps) | 3.5 (simulated in the published run) | 3.7ms per token at batch 1, 14.2ms at batch 16, on 8 H200s |
-| DeepSeek-V4-Flash with DSpark (5 parallel draft positions) | 5 | | +60 to 85% per-user speed over depth-1 MTP (Pro: +57 to 78%) |
+| GLM-5 vs DeepSeek-V3.2, 4 steps | 4 | 2.76 vs 2.55 | not reported |
+| GLM-5.3, EAGLE-style draft from the MTP head | 6 (5 steps) | 3.5 (simulated in the published run) | not reported (3.7ms per token at batch 1, 14.2ms at batch 16, on 8 H200s) |
+| DeepSeek-V4-Flash with DSpark<d-cite key="dspark"></d-cite> (its 5-position parallel drafter) | 5 | not reported | +60 to 85% per-user speed over depth-1 MTP (Pro: +57 to 78%) |
 
 The pattern is familiar from [Section 7](https://jax-ml.github.io/scaling-book/inference): speculation buys the most when the batch is small and the step is bandwidth-bound (+60% at two requests per GPU), and least when the batch is large and the MoE FLOPs are already busy (+14% at 128). The place it matters most in 2026 is one we have not discussed yet: RL rollouts, where a few very long sequences finish last and everyone waits. GLM-5's report says MTP "provides disproportionately large benefits on the long tail" there.
 
@@ -211,7 +210,7 @@ The pattern is familiar from [Section 7](https://jax-ml.github.io/scaling-book/i
 
 ## Reinforcement Learning Is a Systems Problem
 
-Of the four changes in this section, this is the only one with no analog in the original book. In LLaMA 3, post-training was a small fraction of compute: some supervised fine-tuning, some preference optimization on pairs. DeepSeek-R1<d-cite key="deepseekr1"></d-cite> showed in January 2025 that running reinforcement learning against verifiable rewards (does the code pass the tests, is the answer to the math problem right) for tens of thousands of steps produces models that reason at length, and every frontier model since has a "thinking" mode trained this way. DeepSeek-V3.2 says its RL budget exceeded 10% of pretraining compute (up from 5.5% for R1; no other lab publishes the ratio). And RL compute isn't spent the way pretraining compute is.
+Of the four changes in this section, this is the only one with no analog in the original book. In LLaMA 3, post-training was a small fraction of compute: some supervised fine-tuning, some preference optimization on pairs. DeepSeek-R1<d-cite key="deepseekr1"></d-cite> showed in January 2025 that running reinforcement learning against verifiable rewards (does the code pass the tests, is the answer to the math problem right) for tens of thousands of steps produces models that reason at length, and every frontier model since has a "thinking" mode trained this way. DeepSeek-V3.2 says its post-training budget, which is dominated by RL, exceeded 10% of pretraining compute (up from 5.5% for R1; no other lab publishes the ratio). And RL compute isn't spent the way pretraining compute is.
 
 ### The loop
 
@@ -219,22 +218,22 @@ One RL step, in the GRPO (group relative policy optimization)<d-cite key="grpo">
 
 1. Take a batch of prompts. For each, sample $G$ responses from the current policy (R1 uses 16; this $G$ is GRPO's letter and has nothing to do with the group factor of [Section 4](https://jax-ml.github.io/scaling-book/transformers)). This is *generation*: autoregressive decode, thousands to tens of thousands of tokens per response.
 2. Score each response with a reward (a verifier, a test harness, occasionally a reward model). Compute each response's advantage as its reward minus the mean over its group, divided by the group's standard deviation.
-3. Take a few gradient steps on the policy with a clipped policy-gradient loss weighted by the advantages. This is *training*: a forward and backward pass over the generated tokens, $6 N_\text{active}$ FLOPs per token, plus a forward pass of the frozen reference model for the KL term if the recipe keeps one (R1 does, at $2 N_\text{active}$ more; GLM-5, Magistral and DAPO drop it), with the usual parallelism.
+3. Take a few gradient steps on the policy with a clipped policy-gradient loss weighted by the advantages. This is *training*: a forward and backward pass over the generated tokens, $6 N_\text{active}$ FLOPs per token, plus a forward pass of the frozen reference model for the KL term if the recipe keeps one (R1 does, at $2 N_\text{active}$ more; GLM-5, Magistral and DAPO drop it<d-cite key="dapo"></d-cite>), with the usual parallelism.
 4. Copy the new weights to whatever is doing the generating, and repeat.
 
-{% include figure.liquid path="assets/img/rl-loop.svg" class="img-fluid" caption="<b>Figure:</b> one reinforcement-learning step. Generation dominates the wall clock because it is memory-bound decode and because the step cannot finish before its longest response does. The two placements of trainer and generator, and the two fixes for the tail, are discussed below." %}
+{% include figure.liquid path="assets/img/rl-loop.svg" class="img-fluid" zoomable=true caption="<b>Figure:</b> one reinforcement-learning step. Generation dominates the wall clock because it is memory-bound decode and because the step cannot finish before its longest response does. The two placements of trainer and generator, and the two fixes for the tail, are discussed below." %}
 
-R1-Zero's numbers make the scale concrete: 32 questions times 16 samples is a `32 * 16 = 512`-response training batch; a rollout of 8,192 responses is `8192 / 512 = 16` mini-batches; responses run up to 32,768 tokens (65,536 later in the run); 10,400 steps, on 512 H800s for about 198 hours. That's 101K GPU-hours, and the whole R1 pipeline was 147K GPU-hours, or 5.5% of V3's pretraining. MiniMax-M1's RL ran three weeks on 512 H800s. These aren't small runs, and by 2026 they are larger: the fraction is over 10% for V3.2, and Kimi K3 trains RL at a million tokens of context.
+R1-Zero's numbers make the scale concrete: 32 questions times 16 samples is a `32 * 16 = 512`-response training batch; a rollout of 8,192 responses is `8192 / 512 = 16` mini-batches; responses run up to 32,768 tokens (65,536 later in the run); 10,400 steps, on 512 H800s for about 198 hours. That's 101K GPU-hours, and the whole R1 pipeline was 147K, the 5.5% quoted above. MiniMax-M1's RL<d-cite key="minimaxm1"></d-cite> ran three weeks on 512 H800s. These aren't small runs, and by 2026 they are larger: Kimi K3 trains RL at a million tokens of context.
 
 ### Where the time goes
 
-Almost all of it goes to step 1. The published breakdowns agree: generation is 60 to 90% of RL wall-clock (up to 81% in the HybridFlow paper's baseline<d-cite key="verl"></d-cite>, over 90% in ByteDance's measurements, 65 to 72% in NVIDIA's on GB200). That isn't because generation has more FLOPs. Let's count for an R1-style rollout of 8,192 responses averaging 10,000 tokens, 82M tokens in total, on a DeepSeek-V3-class model:
+Almost all of it goes to step 1. The published breakdowns agree: generation is two thirds to over nine tenths of RL wall-clock (81% in the HybridFlow paper's baseline<d-cite key="verl"></d-cite>, over 90% in APRIL's measurements, 65 to 72% in NVIDIA's on GB200). That isn't because generation has more FLOPs. Let's count for an R1-style rollout of 8,192 responses averaging 10,000 tokens, 82M tokens in total, on a DeepSeek-V3-class model:
 
 * **Generation FLOPs:** `2 * 37e9 * 82e6 = 6e18`. **Training FLOPs:** three times that, `1.8e19`.
 * **Training time** at 30% of 512 H800s' fp8 peak: `1.8e19 / (512 * 1.98e15 * 0.3) = 60 s`.
 * **Generation time** if every GPU decoded at DeepSeek's production rate of 1,850 tokens/s: `82e6 / (512 * 1850) = 86 s`.
 
-So even in the best case generation takes longer than training with a third of the FLOPs, because decode is memory-bound: those 86 seconds are `6e18 / (86 * 512 * 1.98e15) = 7%` of fp8 peak, a quarter of the 30% we assumed for the training pass. And the best case isn't what happens. Response lengths are wildly skewed (APRIL measures a standard deviation of 4,000 to 4,500 tokens with a tail near the maximum), and a synchronous system can't train until the *last* response finishes. A 65,536-token response at 20 tokens per second takes **55 minutes**. Meanwhile the batch drains, the per-GPU decode batch shrinks, and the memory-bound step gets no more efficient. This is the straggler problem, and every 2026 RL system is a design for dealing with it.
+So even in the best case generation takes longer than training with a third of the FLOPs, because decode is memory-bound: those 86 seconds are `6e18 / (86 * 512 * 1.98e15) = 7%` of fp8 peak, a quarter of the 30% we assumed for the training pass. And the best case isn't what happens. Response lengths are wildly skewed (APRIL, ByteDance's rollout-scheduling system, measures a standard deviation of 4,000 to 4,500 tokens with a tail near the maximum), and a synchronous system can't train until the *last* response finishes. A 65,536-token response at 20 tokens per second takes **55 minutes**. Meanwhile the batch drains, the per-GPU decode batch shrinks, and the memory-bound step gets no more efficient. This is the straggler problem, and every 2026 RL system is a design for dealing with it.
 
 There's a memory cost to notice too. Those 82M in-flight tokens have KV caches: `82e6 * 35e3 = 2.9TB` in fp8 for a V3-class model at the peak, if every sequence were resident at once, 6GB per GPU across 512. At 64k-token responses, or a million-token agent context, it is an order of magnitude more, and it competes with the trainer's weights and optimizer state for HBM. Kimi K3 offloads training state to NVMe during rollouts and keeps an external KV pool in host DRAM for exactly this reason.
 
@@ -242,7 +241,7 @@ There's a memory cost to notice too. Those 82M in-flight tokens have KV caches: 
 
 There are two ways to arrange the trainer and the generator, and the field uses both.
 
-**Colocated:** the same GPUs alternate between training and generating. Kimi K2 and K3, DeepSeek-V4.1 and slime's synchronous mode work this way. During generation the trainer's weights and optimizer state are offloaded to host memory (K2) or NVMe (K3) and the GPUs run an inference engine. The price is the switch: the inference engine needs the new weights in its own layout. K2's "checkpoint engine" broadcasts the full 1.04TB of fp8 parameters to every node and lets each inference rank pull its shard, in 16 seconds on 256 H20s, which is `1.04e12 / 16 = 65GB/s` into every node (the report's design target was under 30 seconds). Kimi k1.5 quotes under a minute to switch from training to inference and about ten seconds back. The benefit is that no GPU sits idle waiting for the other side, which is why K3's report says colocation keeps a 1M-context RL experiment "within a few hundred GPUs".
+**Colocated:** the same GPUs alternate between training and generating. Kimi K2 and K3, DeepSeek-V4.1 and slime's synchronous mode work this way. During generation the trainer's weights and optimizer state are offloaded to host memory (K2) or NVMe (K3) and the GPUs run an inference engine. The price is the switch: the inference engine needs the new weights in its own layout. K2's "checkpoint engine" broadcasts the full 1.04TB of fp8 parameters to every node and lets each inference rank pull its shard, in 16 seconds on 256 H20s, which is `1.04e12 / 16 = 65GB/s` into every node (the K2 report itself quotes under 30 seconds; 16 seconds is the later checkpoint-engine benchmark on H20s, the export-market Hopper with the H800's networking and a fraction of its FLOPs). Kimi k1.5<d-cite key="kimik15"></d-cite> to switch from training to inference and about ten seconds back. The benefit is that no GPU sits idle waiting for the other side, which is why K3's report says colocation keeps a 1M-context RL experiment "within a few hundred GPUs".
 
 **Disaggregated:** separate pools for training and generation, with weights pushed across the network every few gradient steps. AReaL<d-cite key="areal"></d-cite>, PipelineRL, Magistral<d-cite key="magistral"></d-cite>, GLM's agentic RL and MiniMax-M2 do this. AReaL found that giving three quarters of the GPUs to generation beat an even split, which tells you the ratio of the two workloads. Magistral broadcasts weights GPU-to-GPU in under five seconds and never lets the generators wait for the trainers. The benefit is that the two sides can run different software, different parallelism, even different hardware (slime notes its rollout engines "can even run on different GPU models or vendors").
 
@@ -254,13 +253,13 @@ Two ideas remove the straggler problem, and most 2026 systems use both.
 
 **Partial rollouts** (Kimi k1.5, K2, K3; APRIL; DeepSeek-V4's generation service). Stop the generation phase when a fraction $\lambda$ of responses have finished, save the unfinished ones (with their KV caches), train on what completed, and resume the rest in the next iteration under the new weights. The resumed tokens were sampled from an older policy, so the loss must tolerate some staleness, which brings us to:
 
-**Asynchronous training** (AReaL, PipelineRL, Magistral, slime, DeepSeek-V4.1, Qwen3.5). Let generation run continuously and train on whatever has finished, accepting that a response may have been sampled by a policy several steps old. AReaL measured how much staleness the loss can absorb: up to 8 policy versions costs nothing measurable, as long as the loss uses the *behavior* policy's probabilities for importance weighting. PipelineRL goes further and updates the generators' weights *in flight*, mid-sequence, keeping the KV cache; Magistral found recomputing the cache after a weight update was unnecessary. AReaL reports 2.6x higher training throughput than a synchronous system; DeepSeek-V4.1 says "asynchronous training is now enabled for nearly all our RL" tasks.
+**Asynchronous training** (AReaL, PipelineRL, Magistral, slime, DeepSeek-V4.1, Qwen3.5). Let generation run continuously and train on whatever has finished, accepting that a response may have been sampled by a policy several steps old. AReaL measured how much staleness the loss can absorb: up to about 8 policy versions has minimal measurable cost, as long as the loss uses the *behavior* policy's probabilities for importance weighting (its decoupled PPO objective). PipelineRL goes further and updates the generators' weights *in flight*, mid-sequence, keeping the KV cache; Magistral found recomputing the cache after a weight update was unnecessary. AReaL reports 2.6x higher training throughput than a synchronous system; DeepSeek-V4.1 says "asynchronous training is now enabled for nearly all our RL" tasks.
 
 One subtlety that DeepSeek-V4 documents: if you cancel and restart unfinished responses instead of resuming them, short responses are more likely to survive, and the model learns to be terse. Their generation service keeps a token-level write-ahead log so a preempted request resumes exactly where it stopped.
 
 ### Two engines, one policy
 
-The last problem took the longest to notice. The trainer (Megatron or FSDP, bf16 or fp8) and the generator (vLLM or SGLang, often with fused kernels and quantized weights) compute slightly different probabilities for the same token. The RL loss assumes the sampled tokens came from the policy it is updating. They did not, quite, so nominally on-policy RL is off-policy, and it can diverge.<d-cite key="offpolicy_secret"></d-cite> MiniMax traced their instability to the output head, where activations are large; running it in fp32 raised the correlation between trainer and generator probabilities from about 0.9 to 0.99, and Meta's ScaleRL study found the same fp32-head fix worth a sizeable gain in final reward.
+The last problem took the longest to notice. The trainer (Megatron<d-cite key="megatron"></d-cite>, bf16 or fp8) and the generator (vLLM or SGLang, often with fused kernels and quantized weights) compute slightly different probabilities for the same token. The RL loss assumes the sampled tokens came from the policy it is updating. They did not, quite, so nominally on-policy RL is off-policy, and it can diverge.<d-cite key="offpolicy_secret"></d-cite> MiniMax traced their instability to the output head, where activations are large; running it in fp32 raised the correlation between trainer and generator probabilities from about 0.9 to 0.99, and Meta's ScaleRL study found the same fp32-head fix worth a sizeable gain in final reward.
 
 The fixes in production 2026 systems, in increasing order of thoroughness:
 
@@ -268,26 +267,24 @@ The fixes in production 2026 systems, in increasing order of thoroughness:
 * **Routing replay.** For MoEs, force the trainer to use the exact experts the generator chose (DeepSeek's "Keep Routing", Qwen3.5's "rollout router replay"). Otherwise a small probability difference flips a top-$k$ decision and the two engines run different networks. GLM-5 found the same thing for sparse attention: a nondeterministic top-$k$ in the indexer "caused drastic performance degradation during RL after only a few steps".
 * **Identical numerics.** Train with the quantization the generator uses (Kimi K3's MXFP4 QAT through RL, DeepSeek-V4's native fp4 rollouts).
 
-Each of these is a systems decision with a modeling consequence.
-
-<p markdown=1 class="takeaway">**Takeaway:** RL post-training passed 10% of pretraining compute at DeepSeek by V3.2, and 60 to 90% of its wall-clock is memory-bound generation whose step time is set by the longest response. The 2026 systems answer with partial rollouts, asynchronous training tolerant of several steps of staleness, weight synchronization in seconds for trillion-parameter policies, and numerics deliberately matched between the training and inference engines.</p>
+<p markdown=1 class="takeaway">**Takeaway:** Post-training, most of it RL, passed 10% of pretraining compute at DeepSeek by V3.2, and 60 to 90% of its wall-clock is memory-bound generation whose step time is set by the longest response. The 2026 systems answer with partial rollouts, asynchronous training tolerant of several steps of staleness, weight synchronization in seconds for trillion-parameter policies, and numerics deliberately matched between the training and inference engines.</p>
 
 ## Long-Context Training
 
 [Section 14](../attention) explained why attention is affordable at long context in 2026 architectures. Here's how the training runs actually reach a million tokens: briefly, and at the end.
 
-| Model | Schedule | Tokens at long length |
+| Model | Schedule | Tokens trained at the long lengths |
 | :---- | :------- | :-------------------- |
 | LLaMA 3 405B | 8k, then six stages to 128k | about 800B |
-| DeepSeek-V3 | 4k, then 32k, then 128k | 2 phases of 1,000 steps (about 125B); 119K of 2.79M GPU-hours |
+| DeepSeek-V3 | 4k, then 32k, then 128k | about 125B (2 phases of 1,000 steps) |
 | Kimi K2 | 4k throughout; anneal 400B at 4k + 60B at 32k; YaRN to 128k | 60B |
-| GLM-5 | 4k, then 32k, 128k, 200k | 1T, 500B, 50B |
-| DeepSeek-V4 | 4k, 16k, 64k, then 1M | dense attention for the first 1T tokens; sparse from 64k |
+| GLM-5 | 4k, then 32k, 128k, 200k | 1T at 32k, 500B at 128k, 50B at 200k |
+| DeepSeek-V4 | 4k, 16k, 64k, then 1M | not disclosed (sparse attention from the 64k stage; dense for the first 1T tokens) |
 | DeepSeek-V4.1 | 64k from the start (sparse), 1M from 34T of 45T tokens | 11T |
 | Kimi K3 | 8k, 64k in pretraining; 256k to 1M in the cooldown | undisclosed |
-| Nemotron 3 Ultra | 4k, then 1M | 33B |
+| Nemotron 3 Ultra | 8k, then 1M (92% of the 1M-phase steps at 1M, 8% at 4k) | 33B (about 30B at 1M) |
 
-Two patterns. First, until DeepSeek-V4.1 nobody trained at long length for long: a few percent of tokens, at the end, with YaRN<d-cite key="yarn"></d-cite> to stretch the position encoding. DeepSeek-V3's context extension was 4% of its GPU-hours. Second, the labs that designed for long context from the start (V4.1 at 64k from token one, K3 at 8k to 64k with no position encoding in its full-attention layers) can afford it only because their attention is sparse or linear, per [Section 14](../attention).
+Two patterns. First, until DeepSeek-V4.1 nobody trained at long length for long: a few percent of tokens, at the end, with YaRN<d-cite key="yarn"></d-cite> to stretch the position encoding. DeepSeek-V3's context extension was 119K of its 2.79M GPU-hours, about 4%. Second, the labs that designed for long context from the start (V4.1 at 64k from token one, K3 at 8k to 64k with no position encoding in its full-attention layers) can afford it only because their attention is sparse or linear, per [Section 14](../attention).
 
 Context parallelism, which [Section 5](https://jax-ml.github.io/scaling-book/training) mentioned in a note, is now routine. LLaMA 3 used 16-way CP for 128k with an AllGather of keys and values rather than ring attention, on the argument that with GQA "the time complexity of attention computation is an order of magnitude larger than all-gather", $O(S^2)$ against $O(S)$; that argument only gets stronger with MLA's small latent. Kimi K3 needed a separate scheme for its linear layers, which computes each shard's state transition locally and then reconciles the shards with one fixed-size AllGather and a prefix scan rather than a sequential hand-off, and DeepSeek-V4 needed a two-stage exchange so that its 4:1 and 128:1 token compression works across shard boundaries. Nemotron 3 Ultra's million-token phase ran with 32-way context, 8-way tensor, 128-way expert and 2-way pipeline parallelism on GB200s, which is a nice summary of how many axes a 2026 training job has.
 
@@ -303,7 +300,7 @@ Context parallelism, which [Section 5](https://jax-ml.github.io/scaling-book/tra
 
 * Multi-token prediction adds about 4% to forward FLOPs and provides a speculative decoder with acceptance lengths of 2.2 to 3.5, worth 1.6 to 1.8x at small batch.
 
-* RL passed 10% of pretraining compute at DeepSeek and is dominated by memory-bound generation with a long tail of response lengths. Partial rollouts, asynchronous training (staleness up to 8 steps is fine), fast weight broadcast, and numerically matched engines are the standard toolkit.
+* Post-training passed 10% of pretraining compute at DeepSeek and is dominated by memory-bound generation with a long tail of response lengths. Partial rollouts, asynchronous training (staleness up to about 8 steps has minimal cost), fast weight broadcast, and numerically matched engines are the standard toolkit.
 
 * Long context is trained at the end, on a few percent of tokens, with YaRN; only models with sparse or linear attention train at 64k or more from the start.
 
@@ -329,11 +326,11 @@ Expert matrices: `60 * (384 + 1) * 3 = 69,300`, each costing `5 * (4 * 7168 * 20
 
 {% details Click here for the answer. %}
 
-(a) On an H100 with fp8 matmuls $C = 1.98e15$, so the cross-node FSDP threshold is `1.98e15 / 400e9 = 4,950` tokens per GPU (twice the book's 2,475) and TP is compute-bound below `Y = 28672 * 450e9 / 1.98e15 = 6.5`-way for LLaMA 3-70B's $F = 28672$. Eight-way TP inside the node, the book's default, is now 1.2x communication-bound. On a GB200 NVL72 the NVLink intensity in fp8 is `5e15 / 900e9 = 5,560`, so TP is compute-bound below `28672 / 5560 = 5.2`-way (the two-matmul convention, as in Section 12), and FSDP across racks needs `5e15 / 3.6e12 = 1,390` tokens per GPU.
+(a) On an H100 with fp8 matmuls $C = 1.98e15$, so the cross-node FSDP threshold is `1.98e15 / 400e9 = 4,950` tokens per GPU (twice the book's 2,475) and TP is compute-bound below `Y = F * W_nvlink / C = 28672 * 450e9 / 1.98e15 = 6.5`-way for LLaMA 3-70B's $F = 28672$ (Section 12's dense-MLP rule, which counts two matmuls per token). Eight-way TP inside the node, the book's default, is now 1.2x communication-bound. On a GB200 NVL72 the NVLink intensity in fp8 is `5e15 / 900e9 = 5,560`, so TP is compute-bound below `28672 / 5560 = 5.2`-way, and FSDP across racks needs `5e15 / 3.6e12 = 1,390` tokens per GPU.
 
-(b) Gathering fp8 tensors halves the bytes, so every threshold halves: 2,475 tokens per GPU and 13-way TP on H100, 10-way TP and 694 tokens per GPU on GB200. Sending activations in fp8 is what keeps 8-way TP alive in the fp8 era, and Nemotron 3 Ultra in the table above runs exactly that, TP8 inside its NVLink domain.
+(b) Gathering fp8 tensors halves the bytes, so every threshold halves: 2,475 tokens per GPU and 13-way TP on H100, 10-way TP and 694 tokens per GPU on GB200. Sending activations in fp8 is what would keep 8-way TP compute-bound in the fp8 era. Nemotron 3 Ultra's million-token phase did use TP8 on GB200, but that was a long-context layout for a model whose expert matmuls are NVFP4 and whose attention projections are bf16, and the report doesn't say what precision its TP collectives use; treat it as consistent with this rule, not proof of it.
 
-(c) TPU7x in fp8 has $\alpha = 4.61e15 / 1.8e11 = 25{,}600$ per axis. Gathering bf16 tensors, FSDP needs `25600 / 3 = 8,500` tokens per chip (ten times v5p's 850) and TP is compute-bound below `Y = 3 * 28672 / 25600 = 3.4`-way: two-way, at most. With fp8 gathers, 4,300 tokens per chip and 6.7-way TP, still five times tighter than v5p in bf16. This is why tensor parallelism on a 2026 TPU is two- or four-way and the recipe is EP plus pipeline plus a very large batch, while on GPUs, where NVLink grew with the chip and $\alpha$ stayed near 2,500, eight-way TP survives.
+(c) TPU7x in fp8 has $\alpha = 4.61e15 / 1.8e11 = 25{,}600$ per axis. Gathering bf16 tensors, FSDP needs `25600 / 3 = 8,500` tokens per chip (ten times v5p's 850) and TP is compute-bound below `Y = 3 * 28672 / 25600 = 3.4`-way: two-way, at most. With fp8 gathers, 4,270 tokens per chip and 6.7-way TP, still five times tighter than v5p in bf16. This is why tensor parallelism on a 2026 TPU is two- or four-way and the recipe is EP plus pipeline plus a very large batch, while on GPUs, where NVLink grew with the GPU so that bf16 $\alpha$ stayed near 2,500 (about 5,000 in fp8), eight-way TP survives as long as the activations are sent in fp8, as (b) showed.
 
 {% enddetails %}
 
@@ -341,7 +338,7 @@ Expert matrices: `60 * (384 + 1) * 3 = 69,300`, each costing `5 * (4 * 7168 * 20
 
 {% details Click here for the answer. %}
 
-If the step time were unchanged, 2.44 accepted tokens per step would be a 2.44x gain. A 1.6x gain means the step got `2.44 / 1.6 = 1.5x` slower: verifying 5 tokens (4 drafts plus the base) per sequence instead of 1 isn't free even at batch 2, because the drafter's own forward pass and the attention over 5 query positions add work. At 128 requests per GPU with one draft token, verification puts `128 * 2 = 256` tokens through the MoE per step. The compute-bound threshold for V3's experts on an H200 with fp8 weights and fp8 matmuls is $E/k \cdot (\text{bytes}/2) \cdot C / W_\text{hbm} = 32 \cdot 0.5 \cdot 412 = 6{,}600$ tokens (with $E/k = 256/8$ and the H200's fp8 intensity `1.98e15 / 4.8e12 = 412`), so the step is still memory-bound in principle, but the expert matmuls, the dispatch and the attention all scale with the token count while the weight bytes don't, and at 128 sequences those token-proportional terms are already most of the step. Speculation only pays for the part of the step that is fixed cost, and at large batch that part is small.
+If the step time were unchanged, 2.44 accepted tokens per step would be a 2.44x gain. A 1.6x gain means the step got `2.44 / 1.6 = 1.5x` slower: verifying 5 tokens (4 drafts plus the base) per sequence instead of 1 isn't free even at batch 2, because the drafter's own forward pass and the attention over 5 query positions add work. At 128 requests per GPU with one draft token, verification puts `128 * 2 = 256` tokens through the MoE per step. The compute-bound threshold for V3's experts on an H200 is $B_\text{crit} = (E/k) \cdot (C / W_\text{hbm}) \cdot (\text{bits per weight} / \text{bits per activation})$, [Section 7](https://jax-ml.github.io/scaling-book/inference)'s rule with the MoE factor from [Section 13](../moe): with $E/k = 256/8 = 32$, the H200's fp8 intensity `1.98e15 / 4.8e12 = 412`, fp8 weights and bf16 activations, that's `32 * 412 * 0.5 = 6,600` tokens (13,200 with fp8 activations), so the step is still memory-bound in principle, but the expert matmuls, the dispatch and the attention all scale with the token count while the weight bytes don't, and at 128 sequences those token-proportional terms are already most of the step. Speculation only pays for the part of the step that is fixed cost, and at large batch that part is small.
 
 {% enddetails %}
 
@@ -353,7 +350,7 @@ If the step time were unchanged, 2.44 accepted tokens per step would be a 2.44x 
 
 (b) Generation: `98e6 / (1024 * 1850) = 52 s`. Training: `6 * 32e9 * 98e6 = 1.9e19` FLOPs at `1024 * 1.98e15 * 0.3 = 6.1e17` FLOPs/s is `31 s`. Generation already takes longer than training with a third of the FLOPs.
 
-(c) The 64k-token response takes `65536 / 20 = 3,300 s`, or 55 minutes, during which the batch drains and the decode step gets no cheaper. A synchronous step is therefore closer to an hour than to 83 seconds, and over 95% of the GPU-time is spent waiting on a handful of sequences. This single calculation is the reason partial rollouts and asynchronous training exist.
+(c) The 64k-token response takes `65536 / 20 = 3,300 s`, or 55 minutes, forty times the 83 seconds of (b). In a synchronous system the step is that long, so over 95% of the GPU-time is spent waiting on a handful of sequences while the decode batch on every GPU shrinks toward one. This single calculation is the reason partial rollouts and asynchronous training exist.
 
 {% enddetails %}
 
@@ -361,10 +358,10 @@ If the step time were unchanged, 2.44 accepted tokens per step would be a 2.44x 
 
 {% details Click here for the answer. %}
 
-Every node receives the full 1.04TB (each inference rank then pulls its shard from the node's copy), so the effective ingress is `1.04e12 / 16 = 65GB/s` per node, matching the body text. A node with 8 x 400Gb/s links has 400GB/s of ingress, so the broadcast uses about a sixth of the network; K2's report explains that the limit is the host PCIe fabric, which is why it pipelines host-to-device copies with the broadcast. At one step per minute the sync is 27% of the step if nothing overlaps it. With asynchronous training the generators keep running on stale weights while the new ones stream in, so the sync costs no wall-clock at all, only staleness, which AReaL's results say is harmless up to about 8 steps.
+Every node receives the full 1.04TB (each inference rank then pulls its shard from the node's copy), so the effective ingress is `1.04e12 / 16 = 65GB/s` per node, the number quoted above. A node with 8 x 400Gb/s links has 400GB/s of ingress, so the broadcast uses about a sixth of the network; K2's report explains that the limit is the host PCIe fabric, which is why it pipelines host-to-device copies with the broadcast. At one step per minute the sync is 27% of the step if nothing overlaps it. With asynchronous training the generators keep running on stale weights while the new ones stream in, so the sync costs no wall-clock at all, only staleness, which AReaL's results say is harmless up to about 8 steps.
 
 {% enddetails %}
 
 **Question 7 [fp4 on GB300, open-ended]:** GB300 delivers 15e15 dense fp4 FLOPs/s per GPU with 8e12 bytes/s of HBM and 900GB/s of NVLink egress. For a DeepSeek-V4-Pro-shaped model (384 experts of width 3,072, top-6) served with fp4 expert weights and fp4 matmuls, compute the decode batch needed to be compute-bound in the experts, the maximum tensor-parallel degree that stays compute-bound for a dense 28,672-wide MLP, and whether 64-way expert parallelism inside the rack is compute-bound with fp8 dispatch. Then argue which of these numbers matter for a decode server that is, per [Section 14](../attention), going to be bound by KV cache reads anyway.
 
-<h3 markdown=1 class="next-section">That's all for Section 15. Section 16 puts the last three sections to work on DeepSeek's published serving system and on training a V4-class model on a TPU7x pod: click [here](../applied-frontier).</h3>
+<h3 markdown=1 class="next-section">That's all for Section 15. Section 16 puts the last three sections to work on DeepSeek's published serving system, on training a V4-class model on GB200 NVL72 racks, and on the same run on a TPU7x pod: click [here](../applied-frontier).</h3>
