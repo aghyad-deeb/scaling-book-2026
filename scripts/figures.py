@@ -267,7 +267,7 @@ if __name__ == "__main__":
 # Figure: DeepSeek decode step, roofline terms vs measured (Section 16)
 # ----------------------------------------------------------------------------
 def fig_decode_breakdown():
-    W, H = 900, 330
+    W, H = 900, 350
     p = [f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {W} {H}' width='{W}' height='{H}'>", "<rect width='100%' height='100%' fill='white'/>"]
     x0, x1 = 210, 740
     scale = (x1 - x0) / 55.0  # ms -> px
@@ -299,7 +299,7 @@ def fig_decode_breakdown():
     for row in (0, 1):
         lx = 210
         for lab, col in items[3 * row:3 * row + 3]:
-            yy = H - 40 + 18 * row
+            yy = H - 48 + 18 * row
             p.append(f"<rect x='{lx}' y='{yy}' width='11' height='11' fill='{col}'/>")
             p.append(f"<text x='{lx + 15}' y='{yy + 9}' font-size='11' fill='#333' {FONT}>{lab}</text>")
             lx += 16 + 7 * len(lab) + 24

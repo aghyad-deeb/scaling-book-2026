@@ -68,7 +68,7 @@ And here is what DeepSeek said about serving it on H800 nodes (8 GPUs with 80GB 
 * **Precision:** fp8 for the matmuls and the dispatch, bf16 for the attention core and the combine.
 * **Load:** 278 nodes at peak, 226.75 on average. 608B input tokens, of which 342B (56.3%) hit the prefix cache (which DeepSeek keeps on disk); 168B output tokens. Average output speed 20 to 22 tokens per second per user, average context length per output token 4,989.
 * **Throughput:** about 73.7k input tokens per second per node in prefill (counting cache hits), about 14.8k output tokens per second per node in decode.
-* **Cost:** at <span>$2</span> per GPU-hour, <span>$87,072</span> per day. Billed at R1's prices (<span>$0.14,</span> <span>$0.55</span> and <span>$2.19</span> per million cache-hit, cache-miss and output tokens) the day's tokens would have been worth <span>$562,027.</span>
+* **Cost:** at <span>$2</span> per GPU-hour, <span>$87,072</span> per day. Billed at R1's prices (<span>$0.14</span>, <span>$0.55</span> and <span>$2.19</span> per million cache-hit, cache-miss and output tokens) the day's tokens would have been worth <span>$562,027</span>.
 
 Several of these numbers are consequences of things we derived in the last three sections. Let's check.
 
@@ -151,9 +151,9 @@ So about half of DeepSeek-V3's production decode step is **the expert AllToAll w
 
 {% details Click here for the answer. %}
 
-A node costs `8 * $2 = $16` per hour and produces `14.8e3 * 3600 = 53M` output tokens per hour in decode, so **<span>$0.30</span> per million output tokens** in raw hardware cost. R1 was priced at <span>$2.19,</span> seven times that, which is the origin of DeepSeek's reported "545% cost profit margin" (the theoretical daily revenue of <span>$562K</span> against <span>$87K</span> of cost). The actual margin was lower: V3 was priced below R1, the app was free, and nighttime traffic was discounted. Still, at <span>$0.30</span> of hardware per million tokens the economics of a 671B-parameter model were not what most people assumed in early 2025.
+A node costs `8 * $2 = $16` per hour and produces `14.8e3 * 3600 = 53M` output tokens per hour in decode, so **<span>$0.30</span> per million output tokens** in raw hardware cost. R1 was priced at <span>$2.19</span>, seven times that, which is the origin of DeepSeek's reported "545% cost profit margin" (the theoretical daily revenue of <span>$562K</span> against <span>$87K</span> of cost). The actual margin was lower: V3 was priced below R1, the app was free, and nighttime traffic was discounted. Still, at <span>$0.30</span> of hardware per million tokens the economics of a 671B-parameter model were not what most people assumed in early 2025.
 
-For reference, DeepSeek-V4-Pro's list price is <span>$3.96</span> per million output tokens at peak and half that off-peak (since mid-September 2026 DeepSeek has been routing V4-Pro traffic to V4.1-Flash at <span>$1.20</span> while V4.1-Pro is pending). The GB200 deployment worked out below produces a V3-class token for about <span>$0.22</span> of hardware at 2026 on-demand rates, so against that machine R1's 2025 price of <span>$2.19</span> would be a 10x markup and V4-Pro's <span>$3.96,</span> for a heavier 49B-active model, an 18x one, where DeepSeek had 7x on its own H800s at <span>$2.</span> Both the hardware cost and the markup moved.
+For reference, DeepSeek-V4-Pro's list price is <span>$3.96</span> per million output tokens at peak and half that off-peak (since mid-September 2026 DeepSeek has been routing V4-Pro traffic to V4.1-Flash at <span>$1.20</span> while V4.1-Pro is pending). The GB200 deployment worked out below produces a V3-class token for about <span>$0.22</span> of hardware at 2026 on-demand rates, so against that machine R1's 2025 price of <span>$2.19</span> would be a 10x markup and V4-Pro's <span>$3.96</span>, for a heavier 49B-active model, an 18x one, where DeepSeek had 7x on its own H800s at <span>$2</span>. Both the hardware cost and the markup moved.
 
 {% enddetails %}
 
@@ -199,7 +199,7 @@ DeepSeek's 14.8k per node is 1,850 per GPU, so **7.2x per GPU**. Some of that is
 
 The cleanest evidence is a measurement that holds per-user speed fixed and changes only the domain<d-cite key="inferencex"></d-cite>: at 125 tokens per second per user, a GB200 NVL72 running 32-way EP delivered 4,130 tokens per second per GPU against 941 for B200s in 8-GPU nodes with EP confined to the node (DeepSeek-R1 in fp4 in both cases), a 4.4x difference between two GPUs of nearly identical compute.
 
-In dollars: at <span>$10.50</span> per GB200-hour (CoreWeave's on-demand rate in September 2026; other clouds quote <span>$16</span> and up, and reserved deals start around <span>$8</span>), 13,386 tokens per second is `10.5 / (13386 * 3600) * 1e6 = $0.22` of hardware per million output tokens, <span>$0.17</span> to <span>$0.33</span> across the quoted rates, against the <span>$0.30</span> we found for the H800 at DeepSeek's assumed <span>$2,</span> and that is before the per-user speed target that cost DeepSeek a factor of 1.5 in batch.
+In dollars: at <span>$10.50</span> per GB200-hour (CoreWeave's on-demand rate in September 2026; other clouds quote <span>$16</span> and up, and reserved deals start around <span>$8</span>), 13,386 tokens per second is `10.5 / (13386 * 3600) * 1e6 = $0.22` of hardware per million output tokens, <span>$0.17</span> to <span>$0.33</span> across the quoted rates, against the <span>$0.30</span> we found for the H800 at DeepSeek's assumed <span>$2</span>, and that is before the per-user speed target that cost DeepSeek a factor of 1.5 in batch.
 
 {% enddetails %}
 
